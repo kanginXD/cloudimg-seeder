@@ -8,7 +8,36 @@ ready disk.
 - Python 3.11+
 - QEMU (`qemu-img`, `qemu-system-aarch64` and/or `qemu-system-x86_64`)
 
-arm64 guests require EDK2 firmware shipped with QEMU (`edk2-aarch64-*.fd`).
+arm64 guests need EDK2/AAVMF firmware from the QEMU install (for example
+`edk2-aarch64-*.fd`, `AAVMF_CODE.fd`, or `QEMU_EFI.fd`).
+
+## Install QEMU
+
+macOS:
+
+```text
+brew install qemu
+```
+
+Debian/Ubuntu:
+
+```text
+sudo apt install qemu-system qemu-utils qemu-efi-aarch64
+```
+
+Fedora:
+
+```text
+sudo dnf install qemu-system-x86 qemu-system-aarch64 qemu-img edk2-aarch64
+```
+
+Windows:
+
+```text
+winget install SoftwareFreedomConservancy.QEMU
+```
+
+Add the QEMU `bin` directory to `PATH` if `qemu-img` is not found.
 
 ## Install
 
@@ -56,7 +85,10 @@ cloudimg-seeder resolute-server-cloudimg-amd64.img user-data.yml \
 Guest architecture is detected automatically from the disk filename or the
 host. To use a different architecture, pass `--arch` explicitly.
 
-## IMPORTANT: UTM - Apple Virtualization
+For libvirt, prefer `--output-format qcow2`. For Hyper-V, prefer
+`--output-format vhdx`.
+
+## IMPORTANT: UTM - Apple Virtualization (macOS)
 
 - You MUST use `--output-format raw` (Apple Virtualization does not accept
   qcow2).

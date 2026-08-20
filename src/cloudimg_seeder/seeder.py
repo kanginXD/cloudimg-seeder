@@ -1,31 +1,30 @@
+"""Seed orchestration: NoCloud ISO, qcow2 work copy, headless boot, convert."""
+
 from __future__ import annotations
 
 import logging
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
-from cloudimg_seeder.iso import build_seed_iso
-from cloudimg_seeder.qemu import (
-    GuestArch,
+from cloudimg_seeder.arch import GuestArch, resolve_arch
+from cloudimg_seeder.disk import (
     OutputFormat,
-    QemuError,
-    convert_image,
-    convert_to_qcow2,
+    assert_grow_only,
     default_output_path,
-    image_virtual_size,
-    parse_size,
-    require_cmd,
-    resize_qcow2,
-    resolve_arch,
-    run_headless_qemu,
 )
+from cloudimg_seeder.errors import QemuError, SeedError
+from cloudimg_seeder.guest import run_headless_qemu
+from cloudimg_seeder.host import find_qemu_binary
+from cloudimg_seeder.iso import build_seed_iso
+from cloudimg_seeder.qemu_img import convert_image, convert_to_qcow2, image_virtual_size
+from cloudimg_seeder.qemu_img import resize_image as default_resize_image
 
 logger = logging.getLogger("cloudimg_seeder")
 
-
-class SeedError(Exception):
-    pass
+__all__ = ["SeedConfig", "SeedError", "seed"]
 
 
 @dataclass(frozen=True)
@@ -42,13 +41,49 @@ class SeedConfig:
     timeout_sec: int = 1200
 
 
-async def seed(config: SeedConfig) -> Path:
+class ImageOps(Protocol):
+    def virtual_size(self, path: Path) -> int: ...
+
+    def convert_to_qcow2(self, src: Path, dst: Path) -> None: ...
+
+    def convert_image(self, src: Path, dst: Path, fmt: OutputFormat) -> None: ...
+
+    def resize(self, path: Path, size: str) -> None: ...
+
+
+GuestRunner = Callable[..., Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class DefaultImageOps:
+    def virtual_size(self, path: Path) -> int:
+        return image_virtual_size(path)
+
+    def convert_to_qcow2(self, src: Path, dst: Path) -> None:
+        convert_to_qcow2(src, dst)
+
+    def convert_image(self, src: Path, dst: Path, fmt: OutputFormat) -> None:
+        convert_image(src, dst, fmt)
+
+    def resize(self, path: Path, size: str) -> None:
+        default_resize_image(path, size)
+
+
+async def seed(
+    config: SeedConfig,
+    *,
+    images: ImageOps | None = None,
+    run_guest: GuestRunner | None = None,
+) -> Path:
     """Apply NoCloud cloud-init once and return the output disk path.
 
     Leaves ``config.disk`` unchanged. Seeds via a qcow2 working copy, then
     converts to ``output_format`` when it is not qcow2. On failure a partial
     output may remain.
     """
+    images = images if images is not None else DefaultImageOps()
+    run_guest = run_guest if run_guest is not None else run_headless_qemu
+
     if not config.disk.is_file():
         raise SeedError(f"disk not found: {config.disk}")
     if not config.user_data.is_file():
@@ -57,7 +92,7 @@ async def seed(config: SeedConfig) -> Path:
         raise SeedError(f"meta-data not found: {config.meta_data}")
 
     try:
-        require_cmd("qemu-img", "brew install qemu")
+        find_qemu_binary("qemu-img")
 
         disk = config.disk.resolve()
         user_data = config.user_data.resolve()
@@ -71,13 +106,8 @@ async def seed(config: SeedConfig) -> Path:
         )
 
         if config.size is not None:
-            target = parse_size(config.size)
-            current = image_virtual_size(disk)
-            if target < current:
-                raise SeedError(
-                    f"refusing to shrink disk: target {config.size} "
-                    f"({target} bytes) < current {current} bytes"
-                )
+            current = images.virtual_size(disk)
+            assert_grow_only(current, config.size)
 
         logger.info("guest arch: %s", guest_arch.value)
         logger.info("output format: %s", out_fmt.value)
@@ -96,10 +126,10 @@ async def seed(config: SeedConfig) -> Path:
             else:
                 work_qcow2 = workdir / "seeded.qcow2"
 
-            convert_to_qcow2(disk, work_qcow2)
+            images.convert_to_qcow2(disk, work_qcow2)
             if config.size is not None:
-                resize_qcow2(work_qcow2, config.size)
-            await run_headless_qemu(
+                images.resize(work_qcow2, config.size)
+            await run_guest(
                 arch=guest_arch,
                 disk=work_qcow2,
                 seed_iso=seed_iso,
@@ -109,7 +139,7 @@ async def seed(config: SeedConfig) -> Path:
                 timeout_sec=float(config.timeout_sec),
             )
             if out_fmt is not OutputFormat.QCOW2:
-                convert_image(work_qcow2, out_disk, out_fmt)
+                images.convert_image(work_qcow2, out_disk, out_fmt)
     except QemuError as exc:
         raise SeedError(str(exc)) from None
 

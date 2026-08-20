@@ -1,3 +1,5 @@
+"""CLI entry point."""
+
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +11,8 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from cloudimg_seeder.qemu import GuestArch, OutputFormat
+from cloudimg_seeder.arch import GuestArch
+from cloudimg_seeder.disk import OutputFormat
 from cloudimg_seeder.seeder import SeedConfig, SeedError, seed
 
 err_console = Console(stderr=True)
@@ -124,7 +127,7 @@ def main(
         result = asyncio.run(seed(config))
     except SeedError as exc:
         err_console.print(f"cloudimg-seeder: {exc}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     print(result)
 

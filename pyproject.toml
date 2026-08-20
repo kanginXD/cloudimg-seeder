@@ -36,8 +36,15 @@ target-version = "py311"
 line-length = 88
 extend-exclude = ["temp"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
 [dependency-groups]
 dev = [
     "pyrefly>=1.2.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.16.3",
 ]

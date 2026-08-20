@@ -9,3 +9,7 @@ lockfile = true
 
 [settings.npm]
 package_manager = "aube"
+
+[tasks.test]
+description = "Run unit tests"
+run = "uv run pytest"
