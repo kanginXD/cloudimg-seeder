@@ -9,7 +9,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from cloudimg_seeder.qemu import GuestArch
+from cloudimg_seeder.qemu import GuestArch, OutputFormat
 from cloudimg_seeder.seeder import SeedConfig, SeedError, seed
 
 err_console = Console(stderr=True)
@@ -78,10 +78,17 @@ def main(
             file_okay=True,
             dir_okay=False,
             resolve_path=True,
-            help="Output qcow2 path.",
-            show_default="cwd/{stem}.qcow2",
+            help="Output disk path.",
+            show_default="cwd/{stem}.{ext}",
         ),
     ] = None,
+    output_format: Annotated[
+        OutputFormat,
+        typer.Option(
+            "--output-format",
+            help="Output disk format (hypervisor file formats).",
+        ),
+    ] = OutputFormat.QCOW2,
     size: Annotated[
         str | None,
         typer.Option("--size", help="Grow output disk (e.g. 20G)."),
@@ -108,6 +115,7 @@ def main(
         output=output,
         arch=arch,
         size=size,
+        output_format=output_format,
         cpus=cpus,
         memory_mb=memory_mb,
         timeout_sec=timeout_sec,

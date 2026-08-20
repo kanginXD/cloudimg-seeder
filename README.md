@@ -1,41 +1,72 @@
 # cloudimg-seeder
 
-Bake NoCloud cloud-init into a standalone qcow2 with headless QEMU.
+Cloud-init, baked in. No QEMU ritual, no seed-ISO juggling — one command,
+ready disk.
 
-```text
-cloudimg-seeder DISK USER_DATA [-m META] [--arch arm64|amd64] [-o OUTPUT]
-                [--size SIZE] [--cpus N] [--memory-mb N] [--timeout-sec N]
-```
-
-Stdout: absolute path of the output qcow2.
-Stderr: progress and guest serial.
-
-## Dependencies
+## Requirements
 
 - Python 3.10+
-- QEMU: `qemu-img`, plus `qemu-system-aarch64` and/or `qemu-system-x86_64`
+- QEMU (`qemu-img`, `qemu-system-aarch64` and/or `qemu-system-x86_64`)
 
-```text
-brew install qemu
-```
+arm64 guests require EDK2 firmware shipped with QEMU (`edk2-aarch64-*.fd`).
 
 ## Install
 
+TODO: publish via `pipx` and a Homebrew tap.
+
+## Usage
+
 ```text
-uv sync
-uv run cloudimg-seeder --help
+cloudimg-seeder DISK USER_DATA [OPTIONS]
 ```
 
-## Behavior
+Example:
 
-- Does not modify `DISK`; converts a copy to qcow2, then boots that copy.
-- Default output: `{cwd}/{stem}.qcow2`. If that path is the input disk,
-  uses `{stem}-cloudinit.qcow2`.
-- `--size` grows the output virtual size before boot (qemu-img suffixes,
-  e.g. `20G`). Shrink is rejected. Root partition/FS growth relies on
-  guest cloud-init `growpart` / `resizefs`.
-- `--arch` defaults from the disk filename, otherwise the host.
-- arm64 guests need EDK2 firmware shipped with QEMU (`edk2-aarch64-*.fd`).
-- Without `--meta-data`, meta-data is `instance-id: cloudimg-seeder`.
-- UTM Apple Virtualization accepts arm64 guests only; amd64 needs UTM’s
-  QEMU backend.
+```text
+# Default: qcow2 output, grow to 20G
+cloudimg-seeder resolute-server-cloudimg-arm64.img user-data.yml \
+  -o resolute-seeded.qcow2 --size 20G
+
+# Apple Virtualization / raw disk
+cloudimg-seeder resolute-server-cloudimg-arm64.img user-data.yml \
+  -o resolute-seeded.raw --output-format raw --size 20G
+
+# Explicit guest architecture
+cloudimg-seeder resolute-server-cloudimg-amd64.img user-data.yml \
+  --arch amd64 -o resolute-seeded.qcow2
+```
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `-m`, `--meta-data` | `instance-id: cloudimg-seeder` | NoCloud meta-data file |
+| `--arch` | from filename, else host | `arm64` or `amd64` |
+| `-o`, `--output` | `{cwd}/{stem}.{ext}` | Clash with `DISK` → `{stem}-cloudinit.{ext}` |
+| `--output-format` | `qcow2` | See formats below |
+| `--size` | (unchanged) | Grow virtual size before boot (e.g. `20G`); shrink rejected |
+| `--cpus` | `2` | |
+| `--memory-mb` | `2048` | |
+| `--timeout-sec` | `1200` | Cloud-init wait |
+
+`--output-format` values (local disk files only):
+
+`qcow2`, `qcow`, `qed`, `raw`, `vmdk`, `vhdx`, `vdi`, `vpc`, `parallels`, `dmg`
+
+## Notes
+
+Guest architecture is detected automatically from the disk filename or the
+host. To use a different architecture, pass `--arch` explicitly.
+
+## IMPORTANT: UTM - Apple Virtualization
+
+- You MUST use `--output-format raw` (Apple Virtualization does not accept
+  qcow2).
+- You MUST leave the drive’s Read Only option unchecked. A read-only disk
+  causes an internal virtualization error and stops the VM.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT

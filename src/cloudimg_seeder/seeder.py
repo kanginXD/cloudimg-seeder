@@ -8,7 +8,9 @@ from pathlib import Path
 from cloudimg_seeder.iso import build_seed_iso
 from cloudimg_seeder.qemu import (
     GuestArch,
+    OutputFormat,
     QemuError,
+    convert_image,
     convert_to_qcow2,
     default_output_path,
     image_virtual_size,
@@ -34,16 +36,18 @@ class SeedConfig:
     output: Path | None = None
     arch: GuestArch | None = None
     size: str | None = None
+    output_format: OutputFormat = OutputFormat.QCOW2
     cpus: int = 2
     memory_mb: int = 2048
     timeout_sec: int = 1200
 
 
 async def seed(config: SeedConfig) -> Path:
-    """Apply NoCloud cloud-init once and return the standalone qcow2 path.
+    """Apply NoCloud cloud-init once and return the output disk path.
 
-    Leaves ``config.disk`` unchanged. Writes the output qcow2 before the
-    guest boots; on failure the partial output may remain.
+    Leaves ``config.disk`` unchanged. Seeds via a qcow2 working copy, then
+    converts to ``output_format`` when it is not qcow2. On failure a partial
+    output may remain.
     """
     if not config.disk.is_file():
         raise SeedError(f"disk not found: {config.disk}")
@@ -59,10 +63,11 @@ async def seed(config: SeedConfig) -> Path:
         user_data = config.user_data.resolve()
         meta_data = config.meta_data.resolve() if config.meta_data else None
         guest_arch = resolve_arch(disk, config.arch)
+        out_fmt = config.output_format
         out_disk = (
             config.output.resolve()
             if config.output is not None
-            else default_output_path(disk)
+            else default_output_path(disk, out_fmt)
         )
 
         if config.size is not None:
@@ -75,6 +80,7 @@ async def seed(config: SeedConfig) -> Path:
                 )
 
         logger.info("guest arch: %s", guest_arch.value)
+        logger.info("output format: %s", out_fmt.value)
         logger.info("output: %s", out_disk)
 
         user_bytes = user_data.read_bytes()
@@ -84,18 +90,26 @@ async def seed(config: SeedConfig) -> Path:
             workdir = Path(tmp)
             seed_iso = workdir / "seed.iso"
             build_seed_iso(seed_iso, user_bytes, meta_bytes)
-            convert_to_qcow2(disk, out_disk)
+
+            if out_fmt is OutputFormat.QCOW2:
+                work_qcow2 = out_disk
+            else:
+                work_qcow2 = workdir / "seeded.qcow2"
+
+            convert_to_qcow2(disk, work_qcow2)
             if config.size is not None:
-                resize_qcow2(out_disk, config.size)
+                resize_qcow2(work_qcow2, config.size)
             await run_headless_qemu(
                 arch=guest_arch,
-                disk=out_disk,
+                disk=work_qcow2,
                 seed_iso=seed_iso,
                 workdir=workdir,
                 cpus=config.cpus,
                 memory_mb=config.memory_mb,
                 timeout_sec=float(config.timeout_sec),
             )
+            if out_fmt is not OutputFormat.QCOW2:
+                convert_image(work_qcow2, out_disk, out_fmt)
     except QemuError as exc:
         raise SeedError(str(exc)) from None
 

@@ -32,6 +32,38 @@ class GuestArch(str, Enum):
     AMD64 = "amd64"
 
 
+class OutputFormat(str, Enum):
+    """Local disk image formats suitable as hypervisor disk files.
+
+    Excludes qemu-img protocol and filter drivers (http, nbd, vvfat, …).
+    """
+
+    QCOW2 = "qcow2"
+    QCOW = "qcow"
+    QED = "qed"
+    RAW = "raw"
+    VMDK = "vmdk"
+    VHDX = "vhdx"
+    VDI = "vdi"
+    VPC = "vpc"
+    PARALLELS = "parallels"
+    DMG = "dmg"
+
+
+_FORMAT_SUFFIX: dict[OutputFormat, str] = {
+    OutputFormat.QCOW2: ".qcow2",
+    OutputFormat.QCOW: ".qcow",
+    OutputFormat.QED: ".qed",
+    OutputFormat.RAW: ".raw",
+    OutputFormat.VMDK: ".vmdk",
+    OutputFormat.VHDX: ".vhdx",
+    OutputFormat.VDI: ".vdi",
+    OutputFormat.VPC: ".vhd",
+    OutputFormat.PARALLELS: ".hdd",
+    OutputFormat.DMG: ".dmg",
+}
+
+
 class QemuError(Exception):
     pass
 
@@ -67,13 +99,22 @@ def resolve_arch(disk: Path, explicit: GuestArch | None) -> GuestArch:
     return detect_host_arch()
 
 
-def default_output_path(disk: Path, cwd: Path | None = None) -> Path:
-    """Return cwd/{stem}.qcow2, or {stem}-cloudinit.qcow2 if that equals disk."""
+def format_suffix(fmt: OutputFormat) -> str:
+    return _FORMAT_SUFFIX[fmt]
+
+
+def default_output_path(
+    disk: Path,
+    fmt: OutputFormat = OutputFormat.QCOW2,
+    cwd: Path | None = None,
+) -> Path:
+    """Return cwd/{stem}{ext}, or {stem}-cloudinit{ext} if that equals disk."""
     base = cwd if cwd is not None else Path.cwd()
     stem = disk.stem if disk.suffix else disk.name
-    out = (base / f"{stem}.qcow2").resolve()
+    ext = format_suffix(fmt)
+    out = (base / f"{stem}{ext}").resolve()
     if disk.resolve() == out:
-        out = (base / f"{stem}-cloudinit.qcow2").resolve()
+        out = (base / f"{stem}-cloudinit{ext}").resolve()
     return out
 
 
@@ -147,13 +188,17 @@ def resize_qcow2(path: Path, size: str) -> None:
     logger.info("resized to %s (%s bytes)", size.strip(), target)
 
 
-def convert_to_qcow2(src: Path, dst: Path) -> None:
+def convert_image(src: Path, dst: Path, fmt: OutputFormat) -> None:
     require_cmd("qemu-img", "brew install qemu")
     dst.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["qemu-img", "convert", "-p", "-O", "qcow2", str(src), str(dst)],
+        ["qemu-img", "convert", "-p", "-O", fmt.value, str(src), str(dst)],
         check=True,
     )
+
+
+def convert_to_qcow2(src: Path, dst: Path) -> None:
+    convert_image(src, dst, OutputFormat.QCOW2)
 
 
 def _qemu_share_dirs() -> list[Path]:
