@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import sys
+from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
+
+from cloudimg_seeder.qemu import GuestArch
+from cloudimg_seeder.seeder import SeedConfig, SeedError, seed
+
+err_console = Console(stderr=True)
+
+app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+
+
+def _configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="cloudimg-seeder: %(message)s",
+        stream=sys.stderr,
+    )
+
+
+@app.command()
+def main(
+    disk: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Cloud image (not modified).",
+        ),
+    ],
+    user_data: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="NoCloud user-data.",
+        ),
+    ],
+    meta_data: Annotated[
+        Path | None,
+        typer.Option(
+            "-m",
+            "--meta-data",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="NoCloud meta-data. Default: instance-id: cloudimg-seeder.",
+        ),
+    ] = None,
+    arch: Annotated[
+        GuestArch | None,
+        typer.Option("--arch", help="Guest arch. Default: filename, else host."),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "-o",
+            "--output",
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+            help="Output qcow2 path.",
+            show_default="cwd/{stem}.qcow2",
+        ),
+    ] = None,
+    cpus: Annotated[
+        int,
+        typer.Option("--cpus", help="vCPUs.", min=1),
+    ] = 2,
+    memory_mb: Annotated[
+        int,
+        typer.Option("--memory-mb", help="Memory (MiB).", min=128),
+    ] = 2048,
+    timeout_sec: Annotated[
+        int,
+        typer.Option("--timeout-sec", help="Cloud-init wait timeout.", min=1),
+    ] = 1200,
+) -> None:
+    """Seed cloud-init into a cloud image."""
+    _configure_logging()
+    config = SeedConfig(
+        disk=disk,
+        user_data=user_data,
+        meta_data=meta_data,
+        output=output,
+        arch=arch,
+        cpus=cpus,
+        memory_mb=memory_mb,
+        timeout_sec=timeout_sec,
+    )
+    try:
+        result = asyncio.run(seed(config))
+    except SeedError as exc:
+        err_console.print(f"cloudimg-seeder: {exc}")
+        raise typer.Exit(code=1)
+
+    print(result)
+
+
+if __name__ == "__main__":
+    app()

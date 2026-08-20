@@ -1,0 +1,8 @@
+{
+    "recommendations": [
+        "meta.pyrefly",
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "esbenp.prettier-vscode"
+    ]
+}

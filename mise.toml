@@ -1,0 +1,11 @@
+[tools]
+uv = 'latest'
+prek = { version = "latest", postinstall = "prek install" }
+"npm:prettier" = "latest"
+
+[settings]
+python.uv_venv_auto = "create|source"
+lockfile = true
+
+[settings.npm]
+package_manager = "aube"
