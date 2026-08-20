@@ -12,6 +12,7 @@ import typer
 from rich.console import Console
 
 from cloudimg_seeder.arch import GuestArch
+from cloudimg_seeder.console import drain_stdin
 from cloudimg_seeder.disk import OutputFormat
 from cloudimg_seeder.seeder import SeedConfig, SeedError, seed
 
@@ -108,6 +109,24 @@ def main(
         int,
         typer.Option("--timeout-sec", help="Cloud-init wait timeout.", min=1),
     ] = 1200,
+    quiet: Annotated[
+        bool,
+        typer.Option(
+            "-q",
+            "--quiet",
+            help="Do not write guest serial to stderr.",
+        ),
+    ] = False,
+    serial_log: Annotated[
+        Path | None,
+        typer.Option(
+            "--serial-log",
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+            help="Write guest serial (same text as stderr display) to PATH.",
+        ),
+    ] = None,
 ) -> None:
     """Seed cloud-init into a cloud image."""
     _configure_logging()
@@ -122,12 +141,16 @@ def main(
         cpus=cpus,
         memory_mb=memory_mb,
         timeout_sec=timeout_sec,
+        quiet=quiet,
+        serial_log=serial_log,
     )
     try:
         result = asyncio.run(seed(config))
     except SeedError as exc:
         err_console.print(f"cloudimg-seeder: {exc}")
         raise typer.Exit(code=1) from None
+    finally:
+        drain_stdin()
 
     print(result)
 

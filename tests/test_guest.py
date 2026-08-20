@@ -1,23 +1,21 @@
-"""Tests for guest argv and serial cloud-init detection."""
+"""Tests for guest argv construction."""
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 from cloudimg_seeder.arch import GuestArch
 from cloudimg_seeder.errors import QemuError
 from cloudimg_seeder.guest import (
-    CLOUD_INIT_FINISHED,
     GuestFirmware,
     GuestPorts,
     allocate_localhost_ports,
     build_qemu_argv,
-    stream_serial_until_cloud_init,
+    run_headless_qemu,
 )
+from cloudimg_seeder.serial import CLOUD_INIT_FINISHED
 
 
 def test_allocate_localhost_ports() -> None:
@@ -172,40 +170,82 @@ def test_build_qemu_argv_escapes_comma_in_path(tmp_path: Path) -> None:
     assert any(",," in a for a in drive_args)
 
 
-def test_cloud_init_finished_regex() -> None:
-    assert CLOUD_INIT_FINISHED.search("Cloud-init v. 24.1 finished")
+def test_cloud_init_reexport() -> None:
     assert CLOUD_INIT_FINISHED.search("cloud-init has finished")
-    assert CLOUD_INIT_FINISHED.search("CLOUD-INIT HAS FINISHED") is not None
-    assert CLOUD_INIT_FINISHED.search("still booting") is None
 
 
 @pytest.mark.asyncio
-async def test_stream_serial_detects_finished(monkeypatch: pytest.MonkeyPatch) -> None:
-    reader = asyncio.StreamReader()
-    writer = MagicMock()
-    writer.close = MagicMock()
-    writer.wait_closed = MagicMock(return_value=asyncio.sleep(0))
+async def test_run_headless_drains_stdin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    drained: list[bool] = []
 
-    async def fake_open(host: str, port: int) -> tuple[object, object]:
-        reader.feed_data(b"Cloud-init v. 24 finished at ...\n")
-        reader.feed_eof()
-        return reader, writer
+    def fake_drain() -> None:
+        drained.append(True)
 
-    monkeypatch.setattr("cloudimg_seeder.guest.asyncio.open_connection", fake_open)
-    process = MagicMock()
-    process.returncode = None
-    await stream_serial_until_cloud_init(5555, process)
+    monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", fake_drain)
+    monkeypatch.setattr(
+        "cloudimg_seeder.guest.allocate_localhost_ports",
+        lambda: GuestPorts(qmp=1, serial=2),
+    )
 
+    def fake_accel(_arch: GuestArch) -> str:
+        return "tcg"
 
-@pytest.mark.asyncio
-async def test_stream_serial_process_dies(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_open(host: str, port: int) -> tuple[object, object]:
-        raise OSError("refused")
+    def fake_binary(_name: str) -> str:
+        return "qemu-system-x86_64"
 
-    monkeypatch.setattr("cloudimg_seeder.guest.asyncio.open_connection", fake_open)
-    monkeypatch.setattr("cloudimg_seeder.guest._CONNECT_ATTEMPTS", 2)
-    monkeypatch.setattr("cloudimg_seeder.guest._CONNECT_DELAY_SEC", 0)
-    process = MagicMock()
-    process.returncode = 1
-    with pytest.raises(QemuError, match="before serial"):
-        await stream_serial_until_cloud_init(5555, process)
+    def fake_argv(**_kwargs: object) -> list[str]:
+        return ["true"]
+
+    monkeypatch.setattr("cloudimg_seeder.guest.accel_for_guest", fake_accel)
+    monkeypatch.setattr("cloudimg_seeder.guest.find_qemu_binary", fake_binary)
+    monkeypatch.setattr("cloudimg_seeder.guest.build_qemu_argv", fake_argv)
+
+    class Proc:
+        returncode = 0
+
+        def kill(self) -> None:
+            return None
+
+        async def wait(self) -> int:
+            return 0
+
+    async def fake_exec(*_a: object, **_k: object) -> Proc:
+        return Proc()
+
+    async def boom_boot(*_a: object, **_k: object) -> None:
+        raise TimeoutError
+
+    async def boom_qmp(*_a: object, **_k: object) -> None:
+        raise OSError("qmp down")
+
+    monkeypatch.setattr(
+        "cloudimg_seeder.guest.asyncio.create_subprocess_exec",
+        fake_exec,
+    )
+    monkeypatch.setattr(
+        "cloudimg_seeder.guest._boot_until_shutdown",
+        boom_boot,
+    )
+    monkeypatch.setattr(
+        "cloudimg_seeder.guest.qmp_powerdown_and_wait",
+        boom_qmp,
+    )
+
+    disk = tmp_path / "d.qcow2"
+    iso = tmp_path / "s.iso"
+    disk.write_bytes(b"x")
+    iso.write_bytes(b"x")
+    with pytest.raises(QemuError, match="timed out"):
+        await run_headless_qemu(
+            arch=GuestArch.AMD64,
+            disk=disk,
+            seed_iso=iso,
+            workdir=tmp_path,
+            cpus=1,
+            memory_mb=512,
+            timeout_sec=1,
+            quiet=True,
+        )
+    assert drained == [True]

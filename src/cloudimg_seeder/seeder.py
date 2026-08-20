@@ -39,6 +39,8 @@ class SeedConfig:
     cpus: int = 2
     memory_mb: int = 2048
     timeout_sec: int = 1200
+    quiet: bool = False
+    serial_log: Path | None = None
 
 
 class ImageOps(Protocol):
@@ -137,6 +139,8 @@ async def seed(
                 cpus=config.cpus,
                 memory_mb=config.memory_mb,
                 timeout_sec=float(config.timeout_sec),
+                quiet=config.quiet,
+                serial_log=config.serial_log,
             )
             if out_fmt is not OutputFormat.QCOW2:
                 images.convert_image(work_qcow2, out_disk, out_fmt)

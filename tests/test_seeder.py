@@ -54,27 +54,37 @@ def inputs(tmp_path: Path) -> tuple[Path, Path]:
 
 
 @pytest.mark.asyncio
-async def test_seed_qcow2_happy_path(
+async def test_seed_passes_serial_options(
     tmp_path: Path,
     inputs: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     disk, user = inputs
     out = tmp_path / "out.qcow2"
-    images = FakeImages()
+    log = tmp_path / "serial.log"
+    seen: dict[str, object] = {}
+
+    async def capture_guest(**kwargs: object) -> None:
+        seen.update(kwargs)
+
     monkeypatch.setattr(
         "cloudimg_seeder.seeder.find_qemu_binary",
         _fake_qemu_img,
     )
-    result = await seed(
-        SeedConfig(disk=disk, user_data=user, output=out, arch=GuestArch.AMD64),
-        images=images,
-        run_guest=_noop_guest,
+    await seed(
+        SeedConfig(
+            disk=disk,
+            user_data=user,
+            output=out,
+            arch=GuestArch.AMD64,
+            quiet=True,
+            serial_log=log,
+        ),
+        images=FakeImages(),
+        run_guest=capture_guest,
     )
-    assert result == out.resolve()
-    assert out.is_file()
-    assert len(images.converted) == 1
-    assert images.final_converts == []
+    assert seen.get("quiet") is True
+    assert seen.get("serial_log") == log
 
 
 @pytest.mark.asyncio
