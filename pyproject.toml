@@ -3,7 +3,7 @@ name = "cloudimg-seeder"
 version = "0.2.0"
 description = "Seeds cloud-init into any cloud image via headless QEMU"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "typer>=0.27.1",
@@ -22,13 +22,17 @@ build-backend = "hatchling.build"
 packages = ["src/cloudimg_seeder"]
 
 [tool.pyrefly]
+python-version = "3.11"
 project-includes = [
     "**/*.py*",
     "**/*.ipynb",
 ]
+min-severity = "warn"
+preset = "strict"
 project-excludes = ["**/temp"]
 
 [tool.ruff]
+target-version = "py311"
 line-length = 88
 extend-exclude = ["temp"]
 

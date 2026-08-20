@@ -5,7 +5,7 @@ ready disk.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - QEMU (`qemu-img`, `qemu-system-aarch64` and/or `qemu-system-x86_64`)
 
 arm64 guests require EDK2 firmware shipped with QEMU (`edk2-aarch64-*.fd`).
