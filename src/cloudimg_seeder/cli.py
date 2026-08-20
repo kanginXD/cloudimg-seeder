@@ -82,6 +82,10 @@ def main(
             show_default="cwd/{stem}.qcow2",
         ),
     ] = None,
+    size: Annotated[
+        str | None,
+        typer.Option("--size", help="Grow output disk (e.g. 20G)."),
+    ] = None,
     cpus: Annotated[
         int,
         typer.Option("--cpus", help="vCPUs.", min=1),
@@ -103,6 +107,7 @@ def main(
         meta_data=meta_data,
         output=output,
         arch=arch,
+        size=size,
         cpus=cpus,
         memory_mb=memory_mb,
         timeout_sec=timeout_sec,

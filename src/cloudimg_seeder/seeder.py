@@ -11,7 +11,10 @@ from cloudimg_seeder.qemu import (
     QemuError,
     convert_to_qcow2,
     default_output_path,
+    image_virtual_size,
+    parse_size,
     require_cmd,
+    resize_qcow2,
     resolve_arch,
     run_headless_qemu,
 )
@@ -30,6 +33,7 @@ class SeedConfig:
     meta_data: Path | None = None
     output: Path | None = None
     arch: GuestArch | None = None
+    size: str | None = None
     cpus: int = 2
     memory_mb: int = 2048
     timeout_sec: int = 1200
@@ -61,6 +65,15 @@ async def seed(config: SeedConfig) -> Path:
             else default_output_path(disk)
         )
 
+        if config.size is not None:
+            target = parse_size(config.size)
+            current = image_virtual_size(disk)
+            if target < current:
+                raise SeedError(
+                    f"refusing to shrink disk: target {config.size} "
+                    f"({target} bytes) < current {current} bytes"
+                )
+
         logger.info("guest arch: %s", guest_arch.value)
         logger.info("output: %s", out_disk)
 
@@ -72,6 +85,8 @@ async def seed(config: SeedConfig) -> Path:
             seed_iso = workdir / "seed.iso"
             build_seed_iso(seed_iso, user_bytes, meta_bytes)
             convert_to_qcow2(disk, out_disk)
+            if config.size is not None:
+                resize_qcow2(out_disk, config.size)
             await run_headless_qemu(
                 arch=guest_arch,
                 disk=out_disk,

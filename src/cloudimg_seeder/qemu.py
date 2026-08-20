@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import platform
 import re
@@ -83,6 +84,67 @@ def require_cmd(name: str, hint: str | None = None) -> str:
             raise QemuError(f"missing '{name}'. Install with: {hint}")
         raise QemuError(f"missing '{name}'")
     return path
+
+
+_SIZE_RE = re.compile(r"^(\d+)([bBkKmMgGtTpPeE])?$")
+_SIZE_SUFFIX_BYTES = {
+    "b": 1,
+    "k": 1024,
+    "m": 1024**2,
+    "g": 1024**3,
+    "t": 1024**4,
+    "p": 1024**5,
+    "e": 1024**6,
+}
+
+
+def parse_size(size: str) -> int:
+    """Parse a qemu-img absolute SIZE string to bytes (1024-based suffixes)."""
+    text = size.strip()
+    match = _SIZE_RE.fullmatch(text)
+    if match is None:
+        raise QemuError(f"invalid size: {size!r} (use qemu-img form, e.g. 20G or 512M)")
+    value = int(match.group(1))
+    suffix = (match.group(2) or "b").lower()
+    return value * _SIZE_SUFFIX_BYTES[suffix]
+
+
+def image_virtual_size(path: Path) -> int:
+    require_cmd("qemu-img", "brew install qemu")
+    result = subprocess.run(
+        ["qemu-img", "info", "--output=json", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        payload = json.loads(result.stdout)
+        virtual_size = payload["virtual-size"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise QemuError(f"failed to read virtual size: {path}") from exc
+    if not isinstance(virtual_size, int) or virtual_size < 0:
+        raise QemuError(f"invalid virtual-size for {path}")
+    return virtual_size
+
+
+def resize_qcow2(path: Path, size: str) -> None:
+    """Grow ``path`` to absolute ``size``. Refuse shrink; equal is a no-op."""
+    target = parse_size(size)
+    current = image_virtual_size(path)
+    if target < current:
+        raise QemuError(
+            f"refusing to shrink disk: target {size} ({target} bytes) < "
+            f"current {current} bytes"
+        )
+    if target == current:
+        logger.info("size unchanged (%s bytes); skip resize", current)
+        return
+    require_cmd("qemu-img", "brew install qemu")
+    subprocess.run(
+        ["qemu-img", "resize", str(path), size.strip()],
+        check=True,
+    )
+    logger.info("resized to %s (%s bytes)", size.strip(), target)
 
 
 def convert_to_qcow2(src: Path, dst: Path) -> None:
