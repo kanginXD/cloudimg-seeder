@@ -13,7 +13,9 @@ On stderr, three kinds of output appear:
 
 - **Step messages** (`▸ output: /path/to/seeded.qcow2`) — cloudimg-seeder's
   own narration of what it is doing.
-- **Progress bars** — shown while converting the disk image.
+- **Progress bars** — one while the writable working copy of the source
+  image is prepared, and a second one when `--output-format` is not
+  `qcow2` and the seeded copy is converted to that format.
 - **Guest serial** — the booted guest's console output, framed by
   `──── guest serial ────` / `──── end guest serial ────` so it is never
   mistaken for cloudimg-seeder's own lines.

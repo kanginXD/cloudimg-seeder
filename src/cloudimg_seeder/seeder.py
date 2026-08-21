@@ -81,7 +81,12 @@ class GuestRunner(Protocol):
 
 @dataclass(frozen=True)
 class _DefaultImageOps:
-    """qemu-img-backed ImageOps: the production implementation."""
+    """qemu-img-backed ImageOps: the production implementation.
+
+    Reports percent updates only; the caller brackets each operation with a
+    labelled ``progress_task``, since the stage a conversion belongs to is
+    known there and not here.
+    """
 
     progress: ProgressSink
 
@@ -92,14 +97,13 @@ class _DefaultImageOps:
         return image_info(path).format
 
     def convert(self, src: Path, dst: Path, fmt: OutputFormat) -> None:
-        with progress_task(self.progress, f"converting to {fmt.value}") as task:
-            convert_image(
-                src,
-                dst,
-                fmt,
-                src_format=image_info(src).format,
-                on_progress=task.advance,
-            )
+        convert_image(
+            src,
+            dst,
+            fmt,
+            src_format=image_info(src).format,
+            on_progress=self.progress.advance,
+        )
 
     def resize(self, path: Path, size: str) -> None:
         _resize_image(path, size)
@@ -166,7 +170,8 @@ async def seed(
             else:
                 work_qcow2 = workdir / "seeded.qcow2"
 
-            images.convert(disk, work_qcow2, OutputFormat.QCOW2)
+            with progress_task(progress, "preparing working copy"):
+                images.convert(disk, work_qcow2, OutputFormat.QCOW2)
             if config.size is not None:
                 images.resize(work_qcow2, config.size)
             await run_guest(
@@ -190,7 +195,8 @@ async def seed(
                 ),
             )
             if out_fmt is not OutputFormat.QCOW2:
-                images.convert(work_qcow2, out_disk, out_fmt)
+                with progress_task(progress, f"converting to {out_fmt.value}"):
+                    images.convert(work_qcow2, out_disk, out_fmt)
     except (QemuError, CloudInitError, InvalidInputError) as exc:
         raise SeedError(str(exc)) from exc
 

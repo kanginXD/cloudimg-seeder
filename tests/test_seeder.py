@@ -36,6 +36,20 @@ class FakeImages:
         self.resized.append((path, size))
 
 
+class RecordingProgress:
+    def __init__(self) -> None:
+        self.labels: list[str] = []
+
+    def start(self, label: str) -> None:
+        self.labels.append(label)
+
+    def advance(self, percent: float) -> None:
+        return None
+
+    def finish(self) -> None:
+        return None
+
+
 async def _noop_guest(**_kwargs: object) -> None:
     return None
 
@@ -210,6 +224,59 @@ async def test_seed_converts_source_with_explicit_format(
     assert len(images.resized) == 1
     # source -> qcow2, then qcow2 -> raw
     assert [c[2] for c in images.converted] == [OutputFormat.QCOW2, OutputFormat.RAW]
+
+
+@pytest.mark.asyncio
+async def test_seed_labels_only_the_working_copy_by_default(
+    tmp_path: Path,
+    inputs: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disk, user = inputs
+    progress = RecordingProgress()
+    monkeypatch.setattr(
+        "cloudimg_seeder.seeder.find_qemu_binary",
+        _fake_qemu_img,
+    )
+    await seed(
+        SeedConfig(
+            disk=disk,
+            user_data=user,
+            output=tmp_path / "out.qcow2",
+            arch=GuestArch.AMD64,
+        ),
+        images=FakeImages(),
+        run_guest=_noop_guest,
+        progress=progress,
+    )
+    assert progress.labels == ["preparing working copy"]
+
+
+@pytest.mark.asyncio
+async def test_seed_labels_the_output_conversion_separately(
+    tmp_path: Path,
+    inputs: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disk, user = inputs
+    progress = RecordingProgress()
+    monkeypatch.setattr(
+        "cloudimg_seeder.seeder.find_qemu_binary",
+        _fake_qemu_img,
+    )
+    await seed(
+        SeedConfig(
+            disk=disk,
+            user_data=user,
+            output=tmp_path / "out.raw",
+            arch=GuestArch.AMD64,
+            output_format=OutputFormat.RAW,
+        ),
+        images=FakeImages(),
+        run_guest=_noop_guest,
+        progress=progress,
+    )
+    assert progress.labels == ["preparing working copy", "converting to raw"]
 
 
 @pytest.mark.asyncio
