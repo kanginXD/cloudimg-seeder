@@ -33,6 +33,10 @@ _STATUS_CHARDEV_ID = "cistatus"
 # How long to wait for the status probe after the console already matched
 # cloud-init's final_message: the two race with no guaranteed order.
 _STATUS_GRACE_SEC = 15.0
+# Bound on the serial session's own shutdown once the status probe has
+# decided completion; it settles first so the console keeps the tail the
+# guest was still writing.
+_SERIAL_STOP_SEC = 10.0
 
 __all__ = [
     "CLOUD_INIT_FINISHED",
@@ -184,6 +188,10 @@ async def _wait_for_completion(
     matches cloud-init's final_message first, wait a grace window for the
     probe before concluding status is unknown: the two race with no
     guaranteed order.
+
+    When the probe decides first, the serial session is asked to stop and
+    given ``_SERIAL_STOP_SEC`` to settle, so console output is not cut off
+    mid-line. Its outcome does not affect the returned status.
     """
     serial_task = asyncio.create_task(serial_session.run())
     status_task = asyncio.create_task(status_session.run())
@@ -192,6 +200,8 @@ async def _wait_for_completion(
             {serial_task, status_task}, return_when=asyncio.FIRST_COMPLETED
         )
         if status_task in done:
+            serial_session.request_stop()
+            await asyncio.wait({serial_task}, timeout=_SERIAL_STOP_SEC)
             return status_task.result()
 
         exc = serial_task.exception()

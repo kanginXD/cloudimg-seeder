@@ -7,7 +7,7 @@ import codecs
 import contextlib
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from cloudimg_seeder.console.display import SerialDisplay
 from cloudimg_seeder.errors import QemuError
@@ -22,6 +22,12 @@ CLOUD_INIT_FINISHED = re.compile(r"Cloud-init v\..*finished at", re.IGNORECASE)
 
 _CONNECT_ATTEMPTS = 50
 _CONNECT_DELAY_SEC = 0.1
+# After completion is signalled the guest is still writing: the tail of
+# cloud-init's final line arrives after the signal that matched it. Reading
+# continues until the console falls quiet for this long, bounded by
+# _SETTLE_MAX_SEC in case the guest keeps talking.
+_SETTLE_QUIET_SEC = 0.3
+_SETTLE_MAX_SEC = 2.0
 # Cap on the buffered, not-yet-newline-terminated tail: bounds memory if the
 # guest emits an unbroken stream with no newlines.
 _LINE_BUF_MAX = 8192
@@ -43,6 +49,13 @@ class SerialSession:
     ``idle_timeout_sec`` bounds consecutive silence on the console, not
     total run time: it resets on every non-empty read. ``None`` waits
     indefinitely.
+
+    Reading ends on a completion signal: a console match of
+    ``CLOUD_INIT_FINISHED``, or ``request_stop`` from a caller holding its
+    own signal. Either signal is followed by a settle pass that drains what
+    the guest is still writing. Callers must stop the session through
+    ``request_stop`` rather than cancelling the task, which would truncate
+    the console mid-line.
     """
 
     endpoint: Endpoint
@@ -51,6 +64,13 @@ class SerialSession:
     idle_timeout_sec: float | None = None
     connect_attempts: int = _CONNECT_ATTEMPTS
     connect_delay_sec: float = _CONNECT_DELAY_SEC
+    settle_quiet_sec: float = _SETTLE_QUIET_SEC
+    settle_max_sec: float = _SETTLE_MAX_SEC
+    _stop: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
+
+    def request_stop(self) -> None:
+        """Ask ``run`` to settle and return; safe to call before ``run``."""
+        self._stop.set()
 
     async def run(self) -> None:
         reader, writer = await self._open()
@@ -63,6 +83,9 @@ class SerialSession:
         try:
             while True:
                 self._ensure_running()
+                if self._stop.is_set():
+                    await self._settle(reader, decoder)
+                    return
                 try:
                     chunk = await asyncio.wait_for(reader.read(4096), timeout=1.0)
                 except TimeoutError:
@@ -78,6 +101,7 @@ class SerialSession:
                 self.display.write(text)
                 buf += text
                 if CLOUD_INIT_FINISHED.search(buf):
+                    await self._settle(reader, decoder)
                     return
                 newline = buf.rfind("\n")
                 if newline != -1:
@@ -91,6 +115,35 @@ class SerialSession:
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
+
+    async def _settle(
+        self,
+        reader: asyncio.StreamReader,
+        decoder: codecs.IncrementalDecoder,
+    ) -> None:
+        """Drain what the guest writes after completion, then return.
+
+        Ends on ``settle_quiet_sec`` of silence, on end of stream, on guest
+        exit, or after ``settle_max_sec`` overall. The idle timeout does not
+        apply here: silence is the expected outcome.
+        """
+        deadline = time.monotonic() + self.settle_max_sec
+        while True:
+            if self.process.returncode is not None:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                chunk = await asyncio.wait_for(
+                    reader.read(4096),
+                    timeout=min(self.settle_quiet_sec, remaining),
+                )
+            except TimeoutError:
+                return
+            if not chunk:
+                return
+            self.display.write(decoder.decode(chunk))
 
     def _check_idle(self, last_activity: float) -> None:
         if self.idle_timeout_sec is None:

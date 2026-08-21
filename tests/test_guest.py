@@ -206,6 +206,21 @@ def test_cloud_init_reexport() -> None:
     assert CLOUD_INIT_FINISHED.search("Cloud-init v. 24.1 finished at Tue.")
 
 
+class _FakeSerialSession:
+    """Base for ``SerialSession`` stubs.
+
+    Accepts the real keyword arguments and records ``request_stop``, which
+    ``run`` implementations poll through ``stop_requested``.
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+        self.stop_requested = False
+
+    def request_stop(self) -> None:
+        self.stop_requested = True
+
+
 class _Proc:
     returncode = 0
 
@@ -272,10 +287,7 @@ async def test_run_headless_drains_stdin(
     monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", fake_drain)
     _patch_boot(monkeypatch)
 
-    class TimingOutSession:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
+    class TimingOutSession(_FakeSerialSession):
         async def run(self) -> None:
             raise IdleTimeoutError("no guest output for 1s")
 
@@ -303,14 +315,16 @@ async def test_run_headless_drains_stdin(
 async def test_status_probe_wins_over_console(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The console never matches; the status probe alone decides completion."""
+    """The console never matches; the status probe alone decides completion.
+
+    The stub ignores ``request_stop``, so the run falls back to the bound on
+    serial shutdown.
+    """
     _patch_boot(monkeypatch)
     monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", lambda: None)
+    monkeypatch.setattr("cloudimg_seeder.guest._SERIAL_STOP_SEC", 0.05)
 
-    class HangingSerialSession:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
+    class HangingSerialSession(_FakeSerialSession):
         async def run(self) -> None:
             await asyncio.sleep(100)
 
@@ -332,6 +346,40 @@ async def test_status_probe_wins_over_console(
 
 
 @pytest.mark.asyncio
+async def test_status_probe_stops_serial_session_instead_of_cancelling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the probe deciding completion used to cancel the serial
+    task, cutting the console off wherever the guest happened to be."""
+    _patch_boot(monkeypatch)
+    monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", lambda: None)
+    finished: list[bool] = []
+
+    class StoppableSerialSession(_FakeSerialSession):
+        async def run(self) -> None:
+            while not self.stop_requested:
+                await asyncio.sleep(0.01)
+            finished.append(True)
+
+    class ImmediateStatusSession:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def run(self) -> int:
+            return 0
+
+    async def fake_powerdown(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr("cloudimg_seeder.guest.SerialSession", StoppableSerialSession)
+    monkeypatch.setattr("cloudimg_seeder.guest.StatusSession", ImmediateStatusSession)
+    monkeypatch.setattr("cloudimg_seeder.guest.qmp_powerdown_and_wait", fake_powerdown)
+
+    await _run(tmp_path)
+    assert finished == [True]
+
+
+@pytest.mark.asyncio
 async def test_console_match_waits_grace_window_for_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -341,10 +389,7 @@ async def test_console_match_waits_grace_window_for_status(
     monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", lambda: None)
     monkeypatch.setattr("cloudimg_seeder.guest._STATUS_GRACE_SEC", 2.0)
 
-    class ImmediateSerialSession:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
+    class ImmediateSerialSession(_FakeSerialSession):
         async def run(self) -> None:
             return None
 
@@ -377,10 +422,7 @@ async def test_console_match_status_unknown_after_grace_window(
     monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", lambda: None)
     monkeypatch.setattr("cloudimg_seeder.guest._STATUS_GRACE_SEC", 0.05)
 
-    class ImmediateSerialSession:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
+    class ImmediateSerialSession(_FakeSerialSession):
         async def run(self) -> None:
             return None
 
@@ -413,10 +455,7 @@ async def test_cloud_init_error_exit_1(
     _patch_boot(monkeypatch)
     monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", lambda: None)
 
-    class ImmediateSerialSession:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
+    class ImmediateSerialSession(_FakeSerialSession):
         async def run(self) -> None:
             return None
 
@@ -445,10 +484,7 @@ async def test_degraded_exit_2_warns_by_default(
     _patch_boot(monkeypatch)
     monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", lambda: None)
 
-    class ImmediateSerialSession:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
+    class ImmediateSerialSession(_FakeSerialSession):
         async def run(self) -> None:
             return None
 
@@ -478,10 +514,7 @@ async def test_degraded_exit_2_raises_under_strict(
     _patch_boot(monkeypatch)
     monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", lambda: None)
 
-    class ImmediateSerialSession:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
+    class ImmediateSerialSession(_FakeSerialSession):
         async def run(self) -> None:
             return None
 
@@ -528,14 +561,11 @@ async def test_serial_region_closes_before_powerdown_messages(
     _patch_boot(monkeypatch)
     monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", lambda: None)
 
-    class GuestTalksThenStops:
-        def __init__(self, **kwargs: object) -> None:
-            self._display = kwargs["display"]
-
+    class GuestTalksThenStops(_FakeSerialSession):
         async def run(self) -> None:
-            # Ends mid-line, exactly as a chunk boundary at the cloud-init
-            # completion match does.
-            self._display.write("Cloud-init v. 26.1 finished at Fri")  # type: ignore[attr-defined]
+            # Ends mid-line, as a session stopped mid-line would.
+            display = self.kwargs["display"]
+            display.write("Cloud-init v. 26.1 finished at Fri")  # type: ignore[attr-defined]
 
     class ImmediateStatusSession:
         def __init__(self, **_kwargs: object) -> None:

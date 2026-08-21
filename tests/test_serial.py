@@ -103,6 +103,70 @@ async def test_multibyte_split_across_reads_is_not_corrupted(
 
 
 @pytest.mark.asyncio
+async def test_settle_keeps_reading_after_the_console_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the run ended on the match itself, so the rest of
+    cloud-init's final line was never read."""
+    head, tail = _FINAL_MESSAGE.split("finished at", 1)
+    head += "finished at"
+    reader = asyncio.StreamReader()
+    writer = MagicMock()
+    writer.close = MagicMock()
+    writer.wait_closed = MagicMock(return_value=asyncio.sleep(0))
+
+    async def feed_tail() -> None:
+        await asyncio.sleep(0.05)
+        reader.feed_data(tail.encode())
+        reader.feed_eof()
+
+    async def fake_open(host: str, port: int) -> tuple[object, object]:
+        reader.feed_data(head.encode())
+        asyncio.get_running_loop().create_task(feed_tail())
+        return reader, writer
+
+    monkeypatch.setattr("cloudimg_seeder.transport.asyncio.open_connection", fake_open)
+    process = MagicMock()
+    process.returncode = None
+    ui, buf = _ui()
+    display = SerialDisplay(ui=ui)
+    session = SerialSession(
+        endpoint=TcpEndpoint(5555), process=process, display=display
+    )
+    await session.run()
+    display.close()
+    assert "Up 12.34 seconds" in buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_request_stop_settles_before_returning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = asyncio.StreamReader()
+    writer = MagicMock()
+    writer.close = MagicMock()
+    writer.wait_closed = MagicMock(return_value=asyncio.sleep(0))
+
+    async def fake_open(host: str, port: int) -> tuple[object, object]:
+        reader.feed_data(b"still writing when the probe reported\n")
+        reader.feed_eof()
+        return reader, writer
+
+    monkeypatch.setattr("cloudimg_seeder.transport.asyncio.open_connection", fake_open)
+    process = MagicMock()
+    process.returncode = None
+    ui, buf = _ui()
+    display = SerialDisplay(ui=ui)
+    session = SerialSession(
+        endpoint=TcpEndpoint(5555), process=process, display=display
+    )
+    session.request_stop()
+    await session.run()
+    display.close()
+    assert "still writing when the probe reported" in buf.getvalue()
+
+
+@pytest.mark.asyncio
 async def test_truncated_tail_is_flushed_at_end_of_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
