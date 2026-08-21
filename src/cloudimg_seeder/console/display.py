@@ -7,7 +7,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import TextIO
 
-from cloudimg_seeder.console.ansi import AnsiStripper
+from cloudimg_seeder.console.ansi import AnsiParser
+from cloudimg_seeder.console.filter import SgrFilter
 from cloudimg_seeder.console.ui import Ui
 
 _RULE_OPEN = "guest serial"
@@ -28,19 +29,22 @@ class _LogSink:
     """Plain-text serial log file: all escapes stripped before writing."""
 
     file: TextIO
-    stripper: AnsiStripper = field(default_factory=lambda: AnsiStripper(keep_sgr=False))
+    _filter: SgrFilter = field(init=False, repr=False)
+    _parser: AnsiParser = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._filter = SgrFilter(keep_sgr=False)
+        self._parser = AnsiParser(self._filter)
 
     def write(self, text: str) -> None:
-        plain = self.stripper.feed(text)
+        self._parser.feed(text)
+        plain = self._filter.drain()
         if plain:
             self.file.write(plain)
             self.file.flush()
 
     def close(self) -> None:
-        leftover = self.stripper.flush()
-        if leftover:
-            self.file.write(leftover)
-            self.file.flush()
+        self._parser.reset()  # discard any sequence left in progress
         self.file.close()
 
 
@@ -51,20 +55,23 @@ class SerialDisplay:
     Console output is delimited by ``guest serial`` rules so it is never
     confused with cloudimg-seeder's own lines. The rules are emitted lazily,
     so a boot that produces no serial leaves no empty framed region. Guest
-    text is written raw: an ANSI-capable console keeps the guest's SGR colors
-    while host-querying escapes are dropped, and a dumb or redirected console
-    strips all escapes. ``serial_log`` always receives plain text.
+    text is passed through unchanged apart from filtered escape sequences: an
+    ANSI-capable console keeps the guest's SGR colors while host-querying
+    escapes are dropped, and a dumb or redirected console strips all
+    escapes. ``serial_log`` always receives plain text.
     """
 
     ui: Ui
     show_serial: bool = True
     serial_log: Path | None = None
-    _stripper: AnsiStripper = field(init=False, repr=False)
+    _filter: SgrFilter = field(init=False, repr=False)
+    _parser: AnsiParser = field(init=False, repr=False)
     _log: _LogSink | None = field(default=None, init=False, repr=False)
     _opened: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._stripper = AnsiStripper(keep_sgr=self.ui.ansi_capable)
+        self._filter = SgrFilter(keep_sgr=self.ui.ansi_capable)
+        self._parser = AnsiParser(self._filter)
         if self.serial_log is not None:
             self.serial_log.parent.mkdir(parents=True, exist_ok=True)
             log_file = self.serial_log.open("w", encoding="utf-8", newline="")
@@ -82,13 +89,14 @@ class SerialDisplay:
         if not text:
             return
         if self.show_serial:
-            self._show(self._stripper.feed(text))
+            self._parser.feed(text)
+            self._show(self._filter.drain())
         if self._log is not None:
             self._log.write(text)
 
     def close(self) -> None:
         if self.show_serial:
-            self._show(self._stripper.flush())
+            self._parser.reset()  # discard any sequence left in progress
             if self._opened:
                 self.ui.rule(_RULE_CLOSE)
                 self._opened = False
