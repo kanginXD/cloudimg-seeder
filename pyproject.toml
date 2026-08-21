@@ -31,6 +31,7 @@ project-includes = [
 min-severity = "warn"
 preset = "strict"
 project-excludes = ["**/temp"]
+search-path = ["."]
 
 [tool.ruff]
 target-version = "py311"

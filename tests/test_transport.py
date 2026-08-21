@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -10,15 +11,19 @@ from cloudimg_seeder import transport
 from cloudimg_seeder.transport import TcpEndpoint, UnixEndpoint, allocate_endpoints
 
 
-def test_posix_uses_unix_sockets(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_posix_uses_unix_sockets(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(transport.sys, "platform", "linux")
-    endpoints = allocate_endpoints(tmp_path)
-    assert isinstance(endpoints.qmp, UnixEndpoint)
-    assert isinstance(endpoints.serial, UnixEndpoint)
-    assert endpoints.qmp.path.parent == tmp_path
-    assert endpoints.qmp.path != endpoints.serial.path
+    # A directory shaped like seed()'s real workdir, not pytest's tmp_path:
+    # tmp_path nests several extra components under the OS temp root
+    # (pytest-of-<user>/pytest-<n>/<test-name><n>) and can itself exceed
+    # AF_UNIX's sun_path limit on macOS, which would make this test exercise
+    # the TCP fallback instead of the Unix-socket path it exists to cover.
+    with tempfile.TemporaryDirectory(prefix="cloudimg-seeder-") as workdir:
+        endpoints = allocate_endpoints(Path(workdir))
+        assert isinstance(endpoints.qmp, UnixEndpoint)
+        assert isinstance(endpoints.serial, UnixEndpoint)
+        assert endpoints.qmp.path.parent == Path(workdir)
+        assert endpoints.qmp.path != endpoints.serial.path
 
 
 def test_windows_uses_tcp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

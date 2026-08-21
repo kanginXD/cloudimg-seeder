@@ -18,6 +18,7 @@ source = { editable = "." }
 dependencies = [
     { name = "pycdlib" },
     { name = "qemu-qmp" },
+    { name = "rich" },
     { name = "typer" },
 ]
 
@@ -33,6 +34,7 @@ dev = [
 requires-dist = [
     { name = "pycdlib", specifier = ">=1.20.0" },
     { name = "qemu-qmp", specifier = ">=0.0.6" },
+    { name = "rich", specifier = ">=13.8.0" },
     { name = "typer", specifier = ">=0.27.1" },
 ]
 
