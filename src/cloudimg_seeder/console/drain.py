@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -51,10 +52,8 @@ def _drain_posix(inp: TextIO) -> None:
                 time.sleep(_SETTLE_DELAY_SEC)
     finally:
         if blocking is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.set_blocking(fd, blocking)
-            except OSError:
-                pass
 
 
 def _read_available(fd: int) -> None:

@@ -41,7 +41,17 @@ Add the QEMU `bin` directory to `PATH` if `qemu-img` is not found.
 
 ## Install
 
-TODO: publish via `pipx` and a Homebrew tap.
+```text
+uv tool install git+https://github.com/kanginXD/cloudimg-seeder
+```
+
+Or run without installing:
+
+```text
+uvx --from git+https://github.com/kanginXD/cloudimg-seeder cloudimg-seeder --help
+```
+
+PyPI and Homebrew distribution are not yet set up.
 
 ## Usage
 
@@ -77,6 +87,8 @@ cloudimg-seeder resolute-server-cloudimg-amd64.img user-data.yml \
 | `--timeout-sec` | `1200` | Cloud-init wait |
 | `-q`, `--quiet` | off | Do not write guest serial to stderr |
 | `--serial-log` | (none) | Write guest serial to a plain-text file |
+| `-v`, `--verbose` | off | Enable debug logging |
+| `--version` | | Print the version and exit |
 
 `--output-format` values (local disk files only):
 
@@ -89,6 +101,19 @@ host. To use a different architecture, pass `--arch` explicitly.
 
 For libvirt, prefer `--output-format qcow2`. For Hyper-V, prefer
 `--output-format vhdx`.
+
+The guest boots with a SLIRP-backed NIC, giving cloud-init outbound network
+access (package installs, remote data sources) during the seed run; no
+inbound port is exposed to the host.
+
+Completion is detected from cloud-init's default `final_message` on the
+guest serial console. If user-data overrides `final_message`, completion
+falls back to `--timeout-sec`: the guest is powered down once the timeout
+elapses, whether or not cloud-init has actually finished.
+
+arm64 firmware discovery checks `$QEMU_DATADIR` first, then the QEMU
+binary's own data directory, then common package-manager install paths. Set
+`QEMU_DATADIR` to override discovery for a non-standard QEMU install.
 
 ## IMPORTANT: UTM - Apple Virtualization (macOS)
 

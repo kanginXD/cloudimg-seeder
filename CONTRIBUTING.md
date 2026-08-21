@@ -40,17 +40,20 @@ mise trust && mise install
 uv sync --group dev
 ```
 
-Run unit tests:
+Run unit tests, lint, formatting, and type checking:
 
 ```text
 mise run test
+mise run lint
+mise run fmt
+mise run typecheck
 ```
 
-or:
+Each task also runs directly via `uv`: `uv run pytest`, `uv run ruff check .`,
+`uv run ruff format .`, `uv run pyrefly check`.
 
-```text
-uv run pytest
-```
+Staged changes: `prek run <hook-id>` for one hook, or `prek run <hook-id>
+--all-files` to run a specific hook against the whole tree.
 
 Commits: [Conventional Commits](https://www.conventionalcommits.org/),
 imperative subject.

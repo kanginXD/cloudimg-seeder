@@ -71,15 +71,25 @@ def test_find_code_missing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_find_vars_next_to_code(tmp_path: Path) -> None:
     code = tmp_path / "edk2-aarch64-code.fd"
-    vars_fd = tmp_path / "edk2-aarch64-vars.fd"
+    vars_fd = tmp_path / "edk2-arm-vars.fd"
     code.write_bytes(b"c")
     vars_fd.write_bytes(b"v")
     assert find_edk2_aarch64_vars(code) == vars_fd
 
 
+def test_find_vars_prefers_edk2_arm_vars_name(tmp_path: Path) -> None:
+    code = tmp_path / "edk2-aarch64-code.fd"
+    preferred = tmp_path / "edk2-arm-vars.fd"
+    other = tmp_path / "AAVMF_VARS.fd"
+    code.write_bytes(b"c")
+    preferred.write_bytes(b"preferred")
+    other.write_bytes(b"other")
+    assert find_edk2_aarch64_vars(code) == preferred
+
+
 def test_prepare_vars_copy(tmp_path: Path) -> None:
     code = tmp_path / "edk2-aarch64-code.fd"
-    vars_src = tmp_path / "edk2-aarch64-vars.fd"
+    vars_src = tmp_path / "edk2-arm-vars.fd"
     code.write_bytes(b"c")
     vars_src.write_bytes(b"vars-template")
     dest = tmp_path / "out-vars.fd"
@@ -87,7 +97,9 @@ def test_prepare_vars_copy(tmp_path: Path) -> None:
     assert dest.read_bytes() == b"vars-template"
 
 
-def test_prepare_vars_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prepare_vars_empty_is_erased_flash_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def no_vars(_code: Path | None = None) -> None:
         return None
 
@@ -97,7 +109,9 @@ def test_prepare_vars_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     )
     dest = tmp_path / "empty-vars.fd"
     prepare_edk2_aarch64_vars(dest)
-    assert dest.stat().st_size == 64 * 1024 * 1024
+    data = dest.read_bytes()
+    assert len(data) == 64 * 1024 * 1024
+    assert data == b"\xff" * len(data)
 
 
 def test_firmware_search_dirs_includes_env(
@@ -112,3 +126,20 @@ def test_firmware_search_dirs_includes_env(
     monkeypatch.setattr("cloudimg_seeder.firmware._brew_qemu_share", lambda: None)
     dirs = firmware_search_dirs()
     assert tmp_path in dirs
+
+
+def test_firmware_search_dirs_cached_per_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QEMU_DATADIR", str(tmp_path))
+    monkeypatch.setattr("cloudimg_seeder.firmware._brew_qemu_share", lambda: None)
+    calls: list[str] = []
+
+    def counted_datadir(binary: str) -> None:
+        calls.append(binary)
+        return None
+
+    monkeypatch.setattr("cloudimg_seeder.firmware._print_datadir", counted_datadir)
+    firmware_search_dirs("qemu-system-aarch64")
+    firmware_search_dirs("qemu-system-aarch64")
+    assert calls == ["qemu-system-aarch64"]

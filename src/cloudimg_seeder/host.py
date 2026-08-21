@@ -55,8 +55,9 @@ def prefer_native_accel(guest: GuestArch) -> bool:
 
 
 def _whpx_available() -> bool:
-    windir = os.environ.get("WINDIR", r"C:\Windows")
-    dll = Path(windir) / "System32" / "WinHvPlatform.dll"
+    """Detect the WHPX platform DLL. Does not confirm Hyper-V is enabled."""
+    root = os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR", r"C:\Windows")
+    dll = Path(root) / "System32" / "WinHvPlatform.dll"
     return dll.is_file()
 
 
@@ -82,10 +83,3 @@ def accel_for_guest(guest: GuestArch) -> str:
     if not prefer_native_accel(guest):
         return "tcg"
     return host_accel()
-
-
-def accel_qemu_arg(accel: str) -> str:
-    """Value for -accel (or machine accel=) including WHPX irqchip option."""
-    if accel == "whpx":
-        return "whpx,kernel-irqchip=off"
-    return accel

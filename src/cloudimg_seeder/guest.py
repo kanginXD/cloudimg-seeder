@@ -4,19 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import socket
 from dataclasses import dataclass
 from pathlib import Path
 
-from qemu.qmp import QMPClient
+from qemu.qmp import QMPClient, QMPError
 
 from cloudimg_seeder.arch import GuestArch
 from cloudimg_seeder.console import SerialDisplay, SerialOptions, drain_stdin
 from cloudimg_seeder.errors import QemuError
 from cloudimg_seeder.firmware import find_edk2_aarch64_code, prepare_edk2_aarch64_vars
-from cloudimg_seeder.host import accel_for_guest, accel_qemu_arg, find_qemu_binary
+from cloudimg_seeder.host import accel_for_guest, find_qemu_binary
 from cloudimg_seeder.qemu_path import qemu_drive_path
 from cloudimg_seeder.serial import CLOUD_INIT_FINISHED, SerialSession
+from cloudimg_seeder.transport import Endpoint, GuestEndpoints, allocate_endpoints
 
 logger = logging.getLogger("cloudimg_seeder")
 
@@ -27,30 +27,11 @@ _CONNECT_DELAY_SEC = 0.1
 __all__ = [
     "CLOUD_INIT_FINISHED",
     "GuestFirmware",
-    "GuestPorts",
-    "allocate_localhost_ports",
     "build_qemu_argv",
     "prepare_arm64_firmware",
     "qmp_powerdown_and_wait",
     "run_headless_qemu",
 ]
-
-
-@dataclass(frozen=True)
-class GuestPorts:
-    qmp: int
-    serial: int
-
-
-def allocate_localhost_ports() -> GuestPorts:
-    """Bind two ephemeral ports on 127.0.0.1 and return their numbers."""
-
-    def _one() -> int:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("127.0.0.1", 0))
-            return int(sock.getsockname()[1])
-
-    return GuestPorts(qmp=_one(), serial=_one())
 
 
 @dataclass(frozen=True)
@@ -71,7 +52,7 @@ def build_qemu_argv(
     arch: GuestArch,
     disk: Path,
     seed_iso: Path,
-    ports: GuestPorts,
+    endpoints: GuestEndpoints,
     cpus: int,
     memory_mb: int,
     accel: str,
@@ -79,7 +60,6 @@ def build_qemu_argv(
     firmware: GuestFirmware | None = None,
 ) -> list[str]:
     """Build QEMU argv. Pure aside from path escaping; no filesystem search."""
-    accel_arg = accel_qemu_arg(accel)
     disk_file = qemu_drive_path(disk)
     iso_file = qemu_drive_path(seed_iso)
     argv: list[str]
@@ -91,14 +71,7 @@ def build_qemu_argv(
         vars_file = qemu_drive_path(firmware.vars_store)
         argv = [binary]
         if accel != "tcg":
-            argv.extend(
-                [
-                    "-machine",
-                    f"virt,accel={accel_arg},highmem=on",
-                    "-cpu",
-                    "host",
-                ]
-            )
+            argv.extend(["-machine", f"virt,accel={accel}", "-cpu", "host"])
         else:
             argv.extend(["-machine", "virt", "-accel", "tcg", "-cpu", "max"])
         argv.extend(
@@ -112,9 +85,9 @@ def build_qemu_argv(
     elif arch is GuestArch.AMD64:
         argv = [binary, "-machine", "q35"]
         if accel != "tcg":
-            argv.extend(["-accel", accel_arg, "-cpu", "host"])
+            argv.extend(["-accel", accel, "-cpu", "host"])
         else:
-            argv.extend(["-accel", "tcg", "-cpu", "qemu64"])
+            argv.extend(["-accel", "tcg", "-cpu", "max"])
     else:
         raise QemuError(f"unsupported arch: {arch}")
 
@@ -127,9 +100,9 @@ def build_qemu_argv(
             "-display",
             "none",
             "-serial",
-            f"tcp:127.0.0.1:{ports.serial},server=on,wait=off",
+            endpoints.serial.qemu_arg,
             "-qmp",
-            f"tcp:127.0.0.1:{ports.qmp},server=on,wait=off",
+            endpoints.qmp.qemu_arg,
             "-nic",
             "user,model=virtio-net-pci",
             "-device",
@@ -144,7 +117,7 @@ def build_qemu_argv(
 
 
 async def qmp_powerdown_and_wait(
-    qmp_port: int,
+    qmp_endpoint: Endpoint,
     process: asyncio.subprocess.Process,
     *,
     force_quit: bool = False,
@@ -154,12 +127,12 @@ async def qmp_powerdown_and_wait(
         if process.returncode is not None and not force_quit:
             raise QemuError("QEMU exited before QMP was ready")
         try:
-            await qmp.connect(("127.0.0.1", qmp_port))
+            await qmp.connect(qmp_endpoint.address)
             break
-        except Exception:  # noqa: BLE001
+        except (QMPError, OSError):
             await asyncio.sleep(_CONNECT_DELAY_SEC)
     else:
-        raise QemuError(f"QMP not ready on 127.0.0.1:{qmp_port}")
+        raise QemuError(f"QMP not ready ({qmp_endpoint.address})")
 
     try:
         if force_quit:
@@ -176,7 +149,7 @@ async def qmp_powerdown_and_wait(
     finally:
         try:
             await qmp.disconnect()
-        except Exception as exc:  # noqa: BLE001
+        except (QMPError, OSError) as exc:
             logger.debug("qmp disconnect failed: %s", exc)
 
     try:
@@ -187,13 +160,13 @@ async def qmp_powerdown_and_wait(
 
 
 async def _boot_until_shutdown(
-    ports: GuestPorts,
+    endpoints: GuestEndpoints,
     process: asyncio.subprocess.Process,
     display: SerialDisplay,
 ) -> None:
-    session = SerialSession(port=ports.serial, process=process, display=display)
+    session = SerialSession(endpoint=endpoints.serial, process=process, display=display)
     await session.run()
-    await qmp_powerdown_and_wait(ports.qmp, process)
+    await qmp_powerdown_and_wait(endpoints.qmp, process)
 
 
 async def run_headless_qemu(
@@ -205,20 +178,14 @@ async def run_headless_qemu(
     cpus: int,
     memory_mb: int,
     timeout_sec: float,
-    quiet: bool = False,
-    serial_log: Path | None = None,
-    serial_options: SerialOptions | None = None,
+    serial: SerialOptions,
 ) -> None:
     """Boot disk with seed_iso until cloud-init finishes, then power down.
 
     Streams serial via SerialDisplay. Raises QemuError on timeout or
     unexpected guest exit. Drains TTY stdin after the run.
     """
-    if serial_options is not None:
-        quiet = serial_options.quiet
-        serial_log = serial_options.serial_log
-
-    ports = allocate_localhost_ports()
+    endpoints = allocate_endpoints(workdir)
     accel = accel_for_guest(arch)
     firmware: GuestFirmware | None = None
     if arch is GuestArch.ARM64:
@@ -233,7 +200,7 @@ async def run_headless_qemu(
         arch=arch,
         disk=disk,
         seed_iso=seed_iso,
-        ports=ports,
+        endpoints=endpoints,
         cpus=cpus,
         memory_mb=memory_mb,
         accel=accel,
@@ -242,28 +209,29 @@ async def run_headless_qemu(
     )
     logger.info("starting QEMU (%s, %s cpus, %sM)", arch.value, cpus, memory_mb)
 
-    display = SerialDisplay(quiet=quiet, serial_log=serial_log)
-    process = await asyncio.create_subprocess_exec(*argv)
-    try:
+    with SerialDisplay(quiet=serial.quiet, serial_log=serial.serial_log) as display:
+        process = await asyncio.create_subprocess_exec(*argv)
         try:
-            await asyncio.wait_for(
-                _boot_until_shutdown(ports, process, display),
-                timeout=timeout_sec,
-            )
-        except TimeoutError:
-            logger.warning(
-                "timeout after %ss waiting for cloud-init; forcing quit",
-                int(timeout_sec),
-            )
             try:
-                await qmp_powerdown_and_wait(ports.qmp, process, force_quit=True)
-            except Exception:  # noqa: BLE001
+                await asyncio.wait_for(
+                    _boot_until_shutdown(endpoints, process, display),
+                    timeout=timeout_sec,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "timeout after %ss waiting for cloud-init; forcing quit",
+                    int(timeout_sec),
+                )
+                try:
+                    await qmp_powerdown_and_wait(
+                        endpoints.qmp, process, force_quit=True
+                    )
+                except (QemuError, QMPError, OSError):
+                    process.kill()
+                    await process.wait()
+                raise QemuError("timed out waiting for cloud-init to finish") from None
+        finally:
+            drain_stdin()
+            if process.returncode is None:
                 process.kill()
                 await process.wait()
-            raise QemuError("timed out waiting for cloud-init to finish") from None
-    finally:
-        display.close()
-        drain_stdin()
-        if process.returncode is None:
-            process.kill()
-            await process.wait()

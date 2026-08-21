@@ -63,8 +63,6 @@ def _consume_escape(
     Incomplete returns (None, start).
     """
     n = len(data)
-    if start >= n or data[start] != "\x1b":
-        return ("", start)
     if start + 1 >= n:
         return (None, start)
 

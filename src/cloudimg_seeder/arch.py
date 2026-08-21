@@ -3,25 +3,24 @@
 from __future__ import annotations
 
 import platform
-import re
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
-from cloudimg_seeder.errors import QemuError
+from cloudimg_seeder.errors import InvalidInputError
 
 
-class GuestArch(str, Enum):
+class GuestArch(StrEnum):
     ARM64 = "arm64"
     AMD64 = "amd64"
 
 
 def normalize_arch(value: str) -> GuestArch:
-    key = value.lower().replace("-", "_")
+    key = value.lower()
     if key in {"arm64", "aarch64"}:
         return GuestArch.ARM64
-    if key in {"amd64", "x86_64"}:
+    if key in {"amd64", "x86_64", "x86-64"}:
         return GuestArch.AMD64
-    raise QemuError(f"invalid arch: {value} (use arm64 or amd64)")
+    raise InvalidInputError(f"invalid arch: {value} (use arm64 or amd64)")
 
 
 def detect_host_arch() -> GuestArch:
@@ -30,9 +29,9 @@ def detect_host_arch() -> GuestArch:
 
 def detect_arch_from_name(name: str) -> GuestArch | None:
     lower = name.lower()
-    if re.search(r"arm64|aarch64", lower):
+    if "arm64" in lower or "aarch64" in lower:
         return GuestArch.ARM64
-    if re.search(r"amd64|x86_64|x86-64", lower):
+    if "amd64" in lower or "x86_64" in lower or "x86-64" in lower:
         return GuestArch.AMD64
     return None
 

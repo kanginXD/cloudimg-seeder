@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from cloudimg_seeder.disk import OutputFormat, assert_grow_only
@@ -14,11 +15,18 @@ from cloudimg_seeder.host import find_qemu_binary
 logger = logging.getLogger("cloudimg_seeder")
 
 
-def _run_qemu_img(args: list[str]) -> subprocess.CompletedProcess[str]:
+@dataclass(frozen=True)
+class ImageInfo:
+    virtual_size: int
+    format: str
+
+
+def _run(args: list[str], *, capture_stdout: bool) -> subprocess.CompletedProcess[str]:
     binary = find_qemu_binary("qemu-img")
     result = subprocess.run(
         [binary, *args],
-        capture_output=True,
+        stdout=subprocess.PIPE if capture_stdout else None,
+        stderr=subprocess.PIPE,
         text=True,
         check=False,
     )
@@ -31,30 +39,43 @@ def _run_qemu_img(args: list[str]) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def image_virtual_size(path: Path) -> int:
+def _run_qemu_img(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return _run(args, capture_stdout=True)
+
+
+def image_info(path: Path) -> ImageInfo:
     result = _run_qemu_img(["info", "--output=json", str(path)])
     try:
         payload = json.loads(result.stdout)
         virtual_size = payload["virtual-size"]
+        fmt = payload["format"]
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise QemuError(f"failed to read virtual size: {path}") from exc
+        raise QemuError(f"failed to read image info: {path}") from exc
     if not isinstance(virtual_size, int) or virtual_size < 0:
         raise QemuError(f"invalid virtual-size for {path}")
-    return virtual_size
+    if not isinstance(fmt, str) or not fmt:
+        raise QemuError(f"invalid format for {path}")
+    return ImageInfo(virtual_size=virtual_size, format=fmt)
 
 
-def convert_image(src: Path, dst: Path, fmt: OutputFormat) -> None:
+def image_virtual_size(path: Path) -> int:
+    return image_info(path).virtual_size
+
+
+def convert_image(src: Path, dst: Path, fmt: OutputFormat, *, src_format: str) -> None:
+    """Convert src to fmt at dst. src_format is required and passed as -f,
+    since qemu-img would otherwise probe the (potentially untrusted) input.
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
-    _run_qemu_img(["convert", "-p", "-O", fmt.value, str(src), str(dst)])
-
-
-def convert_to_qcow2(src: Path, dst: Path) -> None:
-    convert_image(src, dst, OutputFormat.QCOW2)
+    _run(
+        ["convert", "-p", "-f", src_format, "-O", fmt.value, str(src), str(dst)],
+        capture_stdout=False,
+    )
 
 
 def resize_image(path: Path, size: str) -> None:
     """Grow ``path`` to absolute ``size``. Refuse shrink; equal is a no-op."""
-    current = image_virtual_size(path)
+    current = image_info(path).virtual_size
     target = assert_grow_only(current, size)
     if target is None:
         logger.info("size unchanged (%s bytes); skip resize", current)

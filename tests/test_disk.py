@@ -13,7 +13,7 @@ from cloudimg_seeder.disk import (
     format_suffix,
     parse_size,
 )
-from cloudimg_seeder.errors import QemuError
+from cloudimg_seeder.errors import InvalidInputError, QemuError
 
 
 def test_format_suffix() -> None:
@@ -37,7 +37,7 @@ def test_parse_size(text: str, expected: int) -> None:
 
 
 def test_parse_size_invalid() -> None:
-    with pytest.raises(QemuError, match="invalid size"):
+    with pytest.raises(InvalidInputError, match="invalid size"):
         parse_size("20GB")
 
 

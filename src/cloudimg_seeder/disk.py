@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import re
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
-from cloudimg_seeder.errors import QemuError
+from cloudimg_seeder.errors import InvalidInputError, QemuError
 
 
-class OutputFormat(str, Enum):
+class OutputFormat(StrEnum):
     """Local disk image formats suitable as hypervisor disk files.
 
     Excludes qemu-img protocol and filter drivers (http, nbd, vvfat, …).
@@ -63,11 +63,10 @@ def default_output_path(
 ) -> Path:
     """Return cwd/{stem}{ext}, or {stem}-cloudinit{ext} if that equals disk."""
     base = cwd if cwd is not None else Path.cwd()
-    stem = disk.stem if disk.suffix else disk.name
     ext = format_suffix(fmt)
-    out = (base / f"{stem}{ext}").resolve()
+    out = (base / f"{disk.stem}{ext}").resolve()
     if disk.resolve() == out:
-        out = (base / f"{stem}-cloudinit{ext}").resolve()
+        out = (base / f"{disk.stem}-cloudinit{ext}").resolve()
     return out
 
 
@@ -76,7 +75,9 @@ def parse_size(size: str) -> int:
     text = size.strip()
     match = _SIZE_RE.fullmatch(text)
     if match is None:
-        raise QemuError(f"invalid size: {size!r} (use qemu-img form, e.g. 20G or 512M)")
+        raise InvalidInputError(
+            f"invalid size: {size!r} (use qemu-img form, e.g. 20G or 512M)"
+        )
     value = int(match.group(1))
     suffix = (match.group(2) or "b").lower()
     return value * _SIZE_SUFFIX_BYTES[suffix]

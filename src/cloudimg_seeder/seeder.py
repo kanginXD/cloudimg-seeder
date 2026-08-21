@@ -4,23 +4,23 @@ from __future__ import annotations
 
 import logging
 import tempfile
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from cloudimg_seeder.arch import GuestArch, resolve_arch
+from cloudimg_seeder.console.display import SerialOptions
 from cloudimg_seeder.disk import (
     OutputFormat,
     assert_grow_only,
     default_output_path,
 )
-from cloudimg_seeder.errors import QemuError, SeedError
+from cloudimg_seeder.errors import InvalidInputError, QemuError, SeedError
 from cloudimg_seeder.guest import run_headless_qemu
 from cloudimg_seeder.host import find_qemu_binary
 from cloudimg_seeder.iso import build_seed_iso
-from cloudimg_seeder.qemu_img import convert_image, convert_to_qcow2, image_virtual_size
-from cloudimg_seeder.qemu_img import resize_image as default_resize_image
+from cloudimg_seeder.qemu_img import convert_image, image_info
+from cloudimg_seeder.qemu_img import resize_image as _resize_image
 
 logger = logging.getLogger("cloudimg_seeder")
 
@@ -46,29 +46,45 @@ class SeedConfig:
 class ImageOps(Protocol):
     def virtual_size(self, path: Path) -> int: ...
 
-    def convert_to_qcow2(self, src: Path, dst: Path) -> None: ...
+    def image_format(self, path: Path) -> str: ...
 
-    def convert_image(self, src: Path, dst: Path, fmt: OutputFormat) -> None: ...
+    def convert(self, src: Path, dst: Path, fmt: OutputFormat) -> None: ...
 
     def resize(self, path: Path, size: str) -> None: ...
 
 
-GuestRunner = Callable[..., Awaitable[None]]
+class GuestRunner(Protocol):
+    async def __call__(
+        self,
+        *,
+        arch: GuestArch,
+        disk: Path,
+        seed_iso: Path,
+        workdir: Path,
+        cpus: int,
+        memory_mb: int,
+        timeout_sec: float,
+        serial: SerialOptions,
+    ) -> None: ...
 
 
-@dataclass(frozen=True)
-class DefaultImageOps:
+class _DefaultImageOps:
+    """qemu-img-backed ImageOps: the production implementation."""
+
     def virtual_size(self, path: Path) -> int:
-        return image_virtual_size(path)
+        return image_info(path).virtual_size
 
-    def convert_to_qcow2(self, src: Path, dst: Path) -> None:
-        convert_to_qcow2(src, dst)
+    def image_format(self, path: Path) -> str:
+        return image_info(path).format
 
-    def convert_image(self, src: Path, dst: Path, fmt: OutputFormat) -> None:
-        convert_image(src, dst, fmt)
+    def convert(self, src: Path, dst: Path, fmt: OutputFormat) -> None:
+        convert_image(src, dst, fmt, src_format=image_info(src).format)
 
     def resize(self, path: Path, size: str) -> None:
-        default_resize_image(path, size)
+        _resize_image(path, size)
+
+
+_default_images = _DefaultImageOps()
 
 
 async def seed(
@@ -83,7 +99,7 @@ async def seed(
     converts to ``output_format`` when it is not qcow2. On failure a partial
     output may remain.
     """
-    images = images if images is not None else DefaultImageOps()
+    images = images if images is not None else _default_images
     run_guest = run_guest if run_guest is not None else run_headless_qemu
 
     if not config.disk.is_file():
@@ -128,7 +144,7 @@ async def seed(
             else:
                 work_qcow2 = workdir / "seeded.qcow2"
 
-            images.convert_to_qcow2(disk, work_qcow2)
+            images.convert(disk, work_qcow2, OutputFormat.QCOW2)
             if config.size is not None:
                 images.resize(work_qcow2, config.size)
             await run_guest(
@@ -139,13 +155,12 @@ async def seed(
                 cpus=config.cpus,
                 memory_mb=config.memory_mb,
                 timeout_sec=float(config.timeout_sec),
-                quiet=config.quiet,
-                serial_log=config.serial_log,
+                serial=SerialOptions(quiet=config.quiet, serial_log=config.serial_log),
             )
             if out_fmt is not OutputFormat.QCOW2:
-                images.convert_image(work_qcow2, out_disk, out_fmt)
-    except QemuError as exc:
-        raise SeedError(str(exc)) from None
+                images.convert(work_qcow2, out_disk, out_fmt)
+    except (QemuError, InvalidInputError) as exc:
+        raise SeedError(str(exc)) from exc
 
     logger.info("done")
     return out_disk

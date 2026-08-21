@@ -9,3 +9,8 @@ class SeedError(Exception):
 
 class QemuError(Exception):
     """QEMU or qemu-img failure. Mapped to SeedError at the seeder boundary."""
+
+
+class InvalidInputError(Exception):
+    """Malformed user-supplied value (arch, size, ...). Mapped to SeedError
+    at the seeder boundary."""

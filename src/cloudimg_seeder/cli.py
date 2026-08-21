@@ -5,18 +5,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from importlib.metadata import version as _package_version
 from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
 
 from cloudimg_seeder.arch import GuestArch
-from cloudimg_seeder.console import drain_stdin
 from cloudimg_seeder.disk import OutputFormat
 from cloudimg_seeder.seeder import SeedConfig, SeedError, seed
 
-err_console = Console(stderr=True)
+_LOGGER = logging.getLogger("cloudimg_seeder")
 
 app = typer.Typer(
     add_completion=False,
@@ -25,12 +24,21 @@ app = typer.Typer(
 )
 
 
-def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="cloudimg-seeder: %(message)s",
-        stream=sys.stderr,
-    )
+def _configure_logging(*, verbose: bool) -> None:
+    # Idempotent: repeated invocations in one process (tests, library
+    # embedding) must not accumulate duplicate handlers.
+    _LOGGER.handlers.clear()
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("cloudimg-seeder: %(message)s"))
+    _LOGGER.addHandler(handler)
+    _LOGGER.setLevel(logging.DEBUG if verbose else logging.INFO)
+    _LOGGER.propagate = False
+
+
+def _version_callback(show: bool) -> None:
+    if show:
+        print(f"cloudimg-seeder {_package_version('cloudimg-seeder')}")
+        raise typer.Exit()
 
 
 @app.command()
@@ -117,6 +125,10 @@ def main(
             help="Do not write guest serial to stderr.",
         ),
     ] = False,
+    verbose: Annotated[
+        bool,
+        typer.Option("-v", "--verbose", help="Enable debug logging."),
+    ] = False,
     serial_log: Annotated[
         Path | None,
         typer.Option(
@@ -127,9 +139,18 @@ def main(
             help="Write guest serial to a plain-text file at PATH.",
         ),
     ] = None,
+    _version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            help="Print the version and exit.",
+            is_eager=True,
+            callback=_version_callback,
+        ),
+    ] = False,
 ) -> None:
     """Seed cloud-init into a cloud image."""
-    _configure_logging()
+    _configure_logging(verbose=verbose)
     config = SeedConfig(
         disk=disk,
         user_data=user_data,
@@ -147,10 +168,8 @@ def main(
     try:
         result = asyncio.run(seed(config))
     except SeedError as exc:
-        err_console.print(f"cloudimg-seeder: {exc}")
+        print(f"cloudimg-seeder: {exc}", file=sys.stderr)
         raise typer.Exit(code=1) from None
-    finally:
-        drain_stdin()
 
     print(result)
 

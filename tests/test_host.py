@@ -12,16 +12,10 @@ from cloudimg_seeder.arch import GuestArch
 from cloudimg_seeder.errors import QemuError
 from cloudimg_seeder.host import (
     accel_for_guest,
-    accel_qemu_arg,
     find_qemu_binary,
     host_accel,
     qemu_install_hint,
 )
-
-
-def test_accel_qemu_arg_whpx() -> None:
-    assert accel_qemu_arg("whpx") == "whpx,kernel-irqchip=off"
-    assert accel_qemu_arg("kvm") == "kvm"
 
 
 def test_qemu_install_hint_darwin(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,7 +75,21 @@ def test_host_accel_windows_whpx(
     dll = windir / "System32" / "WinHvPlatform.dll"
     dll.parent.mkdir(parents=True)
     dll.write_bytes(b"x")
+    monkeypatch.delenv("SYSTEMROOT", raising=False)
     monkeypatch.setenv("WINDIR", str(windir))
+    assert host_accel() == "whpx"
+
+
+def test_host_accel_windows_prefers_systemroot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("cloudimg_seeder.host.platform.system", lambda: "Windows")
+    windir = tmp_path / "Windows"
+    dll = windir / "System32" / "WinHvPlatform.dll"
+    dll.parent.mkdir(parents=True)
+    dll.write_bytes(b"x")
+    monkeypatch.setenv("SYSTEMROOT", str(windir))
+    monkeypatch.setenv("WINDIR", str(tmp_path / "wrong"))
     assert host_accel() == "whpx"
 
 
@@ -91,6 +99,7 @@ def test_host_accel_windows_no_whpx(
     monkeypatch.setattr("cloudimg_seeder.host.platform.system", lambda: "Windows")
     windir = tmp_path / "Windows"
     (windir / "System32").mkdir(parents=True)
+    monkeypatch.delenv("SYSTEMROOT", raising=False)
     monkeypatch.setenv("WINDIR", str(windir))
     assert host_accel() == "tcg"
 

@@ -13,3 +13,15 @@ package_manager = "aube"
 [tasks.test]
 description = "Run unit tests"
 run = "uv run pytest"
+
+[tasks.lint]
+description = "Check lint rules"
+run = "uv run ruff check ."
+
+[tasks.fmt]
+description = "Format source and check formatting"
+run = "uv run ruff format ."
+
+[tasks.typecheck]
+description = "Run strict type checking"
+run = "uv run pyrefly check"

@@ -7,30 +7,29 @@ from pathlib import Path
 import pytest
 
 from cloudimg_seeder.arch import GuestArch
+from cloudimg_seeder.console import SerialOptions
 from cloudimg_seeder.disk import OutputFormat
 from cloudimg_seeder.errors import QemuError, SeedError
 from cloudimg_seeder.seeder import SeedConfig, seed
 
 
 class FakeImages:
-    def __init__(self, virtual_size: int = 1024) -> None:
+    def __init__(self, virtual_size: int = 1024, image_format: str = "raw") -> None:
         self.virtual_size_value = virtual_size
-        self.converted: list[tuple[Path, Path]] = []
+        self.image_format_value = image_format
+        self.converted: list[tuple[Path, Path, OutputFormat]] = []
         self.resized: list[tuple[Path, str]] = []
-        self.final_converts: list[tuple[Path, Path, OutputFormat]] = []
 
     def virtual_size(self, path: Path) -> int:
         return self.virtual_size_value
 
-    def convert_to_qcow2(self, src: Path, dst: Path) -> None:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(b"qcow2")
-        self.converted.append((src, dst))
+    def image_format(self, path: Path) -> str:
+        return self.image_format_value
 
-    def convert_image(self, src: Path, dst: Path, fmt: OutputFormat) -> None:
+    def convert(self, src: Path, dst: Path, fmt: OutputFormat) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(fmt.value.encode())
-        self.final_converts.append((src, dst, fmt))
+        self.converted.append((src, dst, fmt))
 
     def resize(self, path: Path, size: str) -> None:
         self.resized.append((path, size))
@@ -83,19 +82,21 @@ async def test_seed_passes_serial_options(
         images=FakeImages(),
         run_guest=capture_guest,
     )
-    assert seen.get("quiet") is True
-    assert seen.get("serial_log") == log
+    serial = seen.get("serial")
+    assert isinstance(serial, SerialOptions)
+    assert serial.quiet is True
+    assert serial.serial_log == log
 
 
 @pytest.mark.asyncio
-async def test_seed_raw_converts(
+async def test_seed_converts_source_with_explicit_format(
     tmp_path: Path,
     inputs: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     disk, user = inputs
     out = tmp_path / "out.raw"
-    images = FakeImages()
+    images = FakeImages(image_format="vmdk")
     monkeypatch.setattr(
         "cloudimg_seeder.seeder.find_qemu_binary",
         _fake_qemu_img,
@@ -115,7 +116,8 @@ async def test_seed_raw_converts(
     assert result == out.resolve()
     assert out.read_bytes() == b"raw"
     assert len(images.resized) == 1
-    assert len(images.final_converts) == 1
+    # source -> qcow2, then qcow2 -> raw
+    assert [c[2] for c in images.converted] == [OutputFormat.QCOW2, OutputFormat.RAW]
 
 
 @pytest.mark.asyncio
@@ -139,6 +141,30 @@ async def test_seed_shrink_rejected(
                 size="1K",
             ),
             images=images,
+            run_guest=_noop_guest,
+        )
+
+
+@pytest.mark.asyncio
+async def test_seed_invalid_size_maps_to_seed_error(
+    tmp_path: Path,
+    inputs: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disk, user = inputs
+    monkeypatch.setattr(
+        "cloudimg_seeder.seeder.find_qemu_binary",
+        _fake_qemu_img,
+    )
+    with pytest.raises(SeedError, match="invalid size"):
+        await seed(
+            SeedConfig(
+                disk=disk,
+                user_data=user,
+                output=tmp_path / "o.qcow2",
+                size="20GB",
+            ),
+            images=FakeImages(),
             run_guest=_noop_guest,
         )
 

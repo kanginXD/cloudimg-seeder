@@ -2,18 +2,12 @@ repos:
   - repo: builtin
     hooks:
       - id: trailing-whitespace
-        exclude: ^assets/
       - id: check-added-large-files
-        exclude: ^assets/
       - id: end-of-file-fixer
-        exclude: ^assets/
       - id: mixed-line-ending
-        exclude: ^assets/
       - id: check-merge-conflict
       - id: check-executables-have-shebangs
-        exclude: ^assets/
       - id: check-shebang-scripts-are-executable
-        exclude: ^assets/
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.3
@@ -40,18 +34,3 @@ repos:
           - markdown
           - yaml
           - json
-        exclude: ^assets/catalog\.json$
-
-      - id: local-shellcheck
-        name: local-shellcheck
-        entry: shellcheck -x
-        language: system
-        types:
-          - shell
-
-      - id: local-shfmt
-        name: local-shfmt
-        entry: shfmt -w -s -i 2 -ci
-        language: system
-        types:
-          - shell

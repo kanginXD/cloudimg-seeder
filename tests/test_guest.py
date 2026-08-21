@@ -1,4 +1,4 @@
-"""Tests for guest argv construction."""
+"""Tests for guest argv construction and lifecycle."""
 
 from __future__ import annotations
 
@@ -7,22 +7,15 @@ from pathlib import Path
 import pytest
 
 from cloudimg_seeder.arch import GuestArch
+from cloudimg_seeder.console import SerialOptions
 from cloudimg_seeder.errors import QemuError
-from cloudimg_seeder.guest import (
-    GuestFirmware,
-    GuestPorts,
-    allocate_localhost_ports,
-    build_qemu_argv,
-    run_headless_qemu,
-)
+from cloudimg_seeder.guest import GuestFirmware, build_qemu_argv, run_headless_qemu
 from cloudimg_seeder.serial import CLOUD_INIT_FINISHED
+from cloudimg_seeder.transport import GuestEndpoints, TcpEndpoint
 
 
-def test_allocate_localhost_ports() -> None:
-    ports = allocate_localhost_ports()
-    assert ports.qmp > 0
-    assert ports.serial > 0
-    assert ports.qmp != ports.serial
+def _endpoints(qmp: int, serial: int) -> GuestEndpoints:
+    return GuestEndpoints(qmp=TcpEndpoint(qmp), serial=TcpEndpoint(serial))
 
 
 def test_build_qemu_argv_arm64_native(tmp_path: Path) -> None:
@@ -36,7 +29,7 @@ def test_build_qemu_argv_arm64_native(tmp_path: Path) -> None:
         arch=GuestArch.ARM64,
         disk=disk,
         seed_iso=iso,
-        ports=GuestPorts(qmp=4444, serial=5555),
+        endpoints=_endpoints(qmp=4444, serial=5555),
         cpus=2,
         memory_mb=2048,
         accel="hvf",
@@ -45,10 +38,12 @@ def test_build_qemu_argv_arm64_native(tmp_path: Path) -> None:
     )
     joined = " ".join(argv)
     assert argv[0] == "/usr/bin/qemu-system-aarch64"
-    assert "virt,accel=hvf,highmem=on" in argv
+    assert "virt,accel=hvf" in argv
     assert "tcp:127.0.0.1:5555,server=on,wait=off" in argv
     assert "tcp:127.0.0.1:4444,server=on,wait=off" in argv
     assert "if=pflash" in joined
+    assert "highmem" not in joined
+    assert "kernel-irqchip" not in joined
     assert "unix:" not in joined
 
 
@@ -63,7 +58,7 @@ def test_build_qemu_argv_arm64_tcg(tmp_path: Path) -> None:
         arch=GuestArch.ARM64,
         disk=disk,
         seed_iso=iso,
-        ports=GuestPorts(qmp=1, serial=2),
+        endpoints=_endpoints(qmp=1, serial=2),
         cpus=1,
         memory_mb=512,
         accel="tcg",
@@ -84,7 +79,7 @@ def test_build_qemu_argv_amd64_native(tmp_path: Path) -> None:
         arch=GuestArch.AMD64,
         disk=disk,
         seed_iso=iso,
-        ports=GuestPorts(qmp=10, serial=20),
+        endpoints=_endpoints(qmp=10, serial=20),
         cpus=4,
         memory_mb=1024,
         accel="kvm",
@@ -96,7 +91,7 @@ def test_build_qemu_argv_amd64_native(tmp_path: Path) -> None:
     assert "kvm" in argv
 
 
-def test_build_qemu_argv_amd64_whpx(tmp_path: Path) -> None:
+def test_build_qemu_argv_amd64_whpx_no_irqchip_override(tmp_path: Path) -> None:
     disk = tmp_path / "disk.qcow2"
     iso = tmp_path / "seed.iso"
     disk.write_bytes(b"x")
@@ -105,16 +100,17 @@ def test_build_qemu_argv_amd64_whpx(tmp_path: Path) -> None:
         arch=GuestArch.AMD64,
         disk=disk,
         seed_iso=iso,
-        ports=GuestPorts(qmp=10, serial=20),
+        endpoints=_endpoints(qmp=10, serial=20),
         cpus=2,
         memory_mb=1024,
         accel="whpx",
         binary="qemu-system-x86_64",
     )
-    assert "whpx,kernel-irqchip=off" in argv
+    assert "whpx" in argv
+    assert "kernel-irqchip" not in " ".join(argv)
 
 
-def test_build_qemu_argv_amd64_tcg(tmp_path: Path) -> None:
+def test_build_qemu_argv_amd64_tcg_uses_cpu_max(tmp_path: Path) -> None:
     disk = tmp_path / "disk.qcow2"
     iso = tmp_path / "seed.iso"
     disk.write_bytes(b"x")
@@ -123,13 +119,14 @@ def test_build_qemu_argv_amd64_tcg(tmp_path: Path) -> None:
         arch=GuestArch.AMD64,
         disk=disk,
         seed_iso=iso,
-        ports=GuestPorts(qmp=10, serial=20),
+        endpoints=_endpoints(qmp=10, serial=20),
         cpus=2,
         memory_mb=1024,
         accel="tcg",
         binary="qemu-system-x86_64",
     )
-    assert "qemu64" in argv
+    assert "max" in argv
+    assert "qemu64" not in argv
 
 
 def test_build_qemu_argv_arm64_requires_firmware(tmp_path: Path) -> None:
@@ -142,7 +139,7 @@ def test_build_qemu_argv_arm64_requires_firmware(tmp_path: Path) -> None:
             arch=GuestArch.ARM64,
             disk=disk,
             seed_iso=iso,
-            ports=GuestPorts(qmp=1, serial=2),
+            endpoints=_endpoints(qmp=1, serial=2),
             cpus=1,
             memory_mb=512,
             accel="tcg",
@@ -160,7 +157,7 @@ def test_build_qemu_argv_escapes_comma_in_path(tmp_path: Path) -> None:
         arch=GuestArch.AMD64,
         disk=disk,
         seed_iso=iso,
-        ports=GuestPorts(qmp=1, serial=2),
+        endpoints=_endpoints(qmp=1, serial=2),
         cpus=1,
         memory_mb=512,
         accel="tcg",
@@ -170,8 +167,35 @@ def test_build_qemu_argv_escapes_comma_in_path(tmp_path: Path) -> None:
     assert any(",," in a for a in drive_args)
 
 
+def test_build_qemu_argv_uses_unix_endpoints(tmp_path: Path) -> None:
+    from cloudimg_seeder.transport import UnixEndpoint
+
+    disk = tmp_path / "disk.qcow2"
+    iso = tmp_path / "seed.iso"
+    disk.write_bytes(b"x")
+    iso.write_bytes(b"x")
+    endpoints = GuestEndpoints(
+        qmp=UnixEndpoint(tmp_path / "qmp.sock"),
+        serial=UnixEndpoint(tmp_path / "serial.sock"),
+    )
+    argv = build_qemu_argv(
+        arch=GuestArch.AMD64,
+        disk=disk,
+        seed_iso=iso,
+        endpoints=endpoints,
+        cpus=1,
+        memory_mb=512,
+        accel="tcg",
+        binary="qemu-system-x86_64",
+    )
+    joined = " ".join(argv)
+    assert f"unix:{tmp_path / 'qmp.sock'}" in joined
+    assert f"unix:{tmp_path / 'serial.sock'}" in joined
+    assert "tcp:" not in joined
+
+
 def test_cloud_init_reexport() -> None:
-    assert CLOUD_INIT_FINISHED.search("cloud-init has finished")
+    assert CLOUD_INIT_FINISHED.search("Cloud-init v. 24.1 finished at Tue.")
 
 
 @pytest.mark.asyncio
@@ -184,10 +208,6 @@ async def test_run_headless_drains_stdin(
         drained.append(True)
 
     monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", fake_drain)
-    monkeypatch.setattr(
-        "cloudimg_seeder.guest.allocate_localhost_ports",
-        lambda: GuestPorts(qmp=1, serial=2),
-    )
 
     def fake_accel(_arch: GuestArch) -> str:
         return "tcg"
@@ -246,6 +266,6 @@ async def test_run_headless_drains_stdin(
             cpus=1,
             memory_mb=512,
             timeout_sec=1,
-            quiet=True,
+            serial=SerialOptions(quiet=True),
         )
     assert drained == [True]

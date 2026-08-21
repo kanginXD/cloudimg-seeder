@@ -1,30 +1,34 @@
-"""Guest serial TCP session: decode, match cloud-init, feed display."""
+"""Guest serial connection: decode, match cloud-init completion, feed display."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from dataclasses import dataclass
 
 from cloudimg_seeder.console.display import SerialDisplay
 from cloudimg_seeder.errors import QemuError
+from cloudimg_seeder.transport import Endpoint
 
-CLOUD_INIT_FINISHED = re.compile(
-    r"Cloud-init.*finished|cloud-init has finished",
-    re.IGNORECASE,
-)
+# Matches cloud-init's default final_message ("Cloud-init v. {version}
+# finished at {timestamp}. Datasource {datasource}.  Up {uptime} seconds").
+# A custom final_message in user-data is not matched; --timeout-sec bounds
+# the wait in that case.
+CLOUD_INIT_FINISHED = re.compile(r"Cloud-init v\..*finished at", re.IGNORECASE)
 
 _CONNECT_ATTEMPTS = 50
 _CONNECT_DELAY_SEC = 0.1
-_MATCH_BUF_MAX = 1_000_000
-_MATCH_BUF_KEEP = 500_000
+# Cap on the buffered, not-yet-newline-terminated tail: bounds memory if the
+# guest emits an unbroken stream with no newlines.
+_LINE_BUF_MAX = 8192
 
 
 @dataclass
 class SerialSession:
     """Read guest serial until cloud-init finishes; feed ``display``."""
 
-    port: int
+    endpoint: Endpoint
     process: asyncio.subprocess.Process
     display: SerialDisplay
     connect_attempts: int = _CONNECT_ATTEMPTS
@@ -49,14 +53,15 @@ class SerialSession:
                 buf += text
                 if CLOUD_INIT_FINISHED.search(buf):
                     return
-                if len(buf) > _MATCH_BUF_MAX:
-                    buf = buf[-_MATCH_BUF_KEEP:]
+                newline = buf.rfind("\n")
+                if newline != -1:
+                    buf = buf[newline + 1 :]
+                elif len(buf) > _LINE_BUF_MAX:
+                    buf = buf[-_LINE_BUF_MAX:]
         finally:
             writer.close()
-            try:
+            with contextlib.suppress(OSError):
                 await writer.wait_closed()
-            except OSError:
-                pass
 
     def _ensure_running(self) -> None:
         if self.process.returncode is not None:
@@ -69,7 +74,7 @@ class SerialSession:
             if self.process.returncode is not None:
                 raise QemuError("QEMU exited before serial was ready")
             try:
-                return await asyncio.open_connection("127.0.0.1", self.port)
+                return await self.endpoint.open()
             except OSError:
                 await asyncio.sleep(self.connect_delay_sec)
-        raise QemuError(f"serial not ready on 127.0.0.1:{self.port}")
+        raise QemuError(f"serial not ready ({self.endpoint.address})")

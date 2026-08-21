@@ -5,6 +5,8 @@ from __future__ import annotations
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
 from cloudimg_seeder.console.display import SerialDisplay
 
 
@@ -60,3 +62,28 @@ def test_quiet_with_serial_log(tmp_path: Path) -> None:
     display.close()
     assert buf.getvalue() == ""
     assert log.read_text(encoding="utf-8") == "only-file"
+
+
+def test_context_manager_closes_on_exit(tmp_path: Path) -> None:
+    buf = StringIO()
+    log = tmp_path / "serial.log"
+    with SerialDisplay(
+        quiet=False, ansi_capable=True, stream=buf, serial_log=log
+    ) as display:
+        display.write("hello\x1b[6n")
+    assert buf.getvalue() == "hello"
+    assert log.read_text(encoding="utf-8") == "hello"
+
+
+def test_context_manager_closes_on_exception(tmp_path: Path) -> None:
+    buf = StringIO()
+    log = tmp_path / "serial.log"
+    with (
+        pytest.raises(RuntimeError),
+        SerialDisplay(
+            quiet=False, ansi_capable=True, stream=buf, serial_log=log
+        ) as display,
+    ):
+        display.write("partial")
+        raise RuntimeError("boom")
+    assert log.read_text(encoding="utf-8") == "partial"

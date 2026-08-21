@@ -12,7 +12,7 @@ from cloudimg_seeder.arch import (
     normalize_arch,
     resolve_arch,
 )
-from cloudimg_seeder.errors import QemuError
+from cloudimg_seeder.errors import InvalidInputError
 
 
 @pytest.mark.parametrize(
@@ -32,7 +32,7 @@ def test_normalize_arch(value: str, expected: GuestArch) -> None:
 
 
 def test_normalize_arch_invalid() -> None:
-    with pytest.raises(QemuError, match="invalid arch"):
+    with pytest.raises(InvalidInputError, match="invalid arch"):
         normalize_arch("riscv64")
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Mapping
 from typing import Protocol
 
 
@@ -14,7 +15,7 @@ class SupportsIsATty(Protocol):
 def stderr_ansi_capable(
     stream: SupportsIsATty | None = None,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> bool:
     """Return True when guest serial may keep CSI/SGR on stderr.
 
