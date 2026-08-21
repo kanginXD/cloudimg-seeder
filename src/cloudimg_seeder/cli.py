@@ -124,7 +124,7 @@ def main(
             file_okay=True,
             dir_okay=False,
             resolve_path=True,
-            help="Write guest serial (same text as stderr display) to PATH.",
+            help="Write guest serial to a plain-text file at PATH.",
         ),
     ] = None,
 ) -> None:

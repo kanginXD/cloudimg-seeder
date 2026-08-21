@@ -76,7 +76,7 @@ cloudimg-seeder resolute-server-cloudimg-amd64.img user-data.yml \
 | `--memory-mb` | `2048` | |
 | `--timeout-sec` | `1200` | Cloud-init wait |
 | `-q`, `--quiet` | off | Do not write guest serial to stderr |
-| `--serial-log` | (none) | Write guest serial (same text as display) to a file |
+| `--serial-log` | (none) | Write guest serial to a plain-text file |
 
 `--output-format` values (local disk files only):
 
