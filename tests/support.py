@@ -19,3 +19,21 @@ class FakeTty(StringIO):
     @override
     def isatty(self) -> bool:
         return True
+
+
+class ScriptedReader:
+    """A reader returning one scripted chunk per ``read()`` call.
+
+    ``asyncio.StreamReader`` coalesces everything fed before the first
+    ``read()`` into one chunk, so it cannot pin a byte boundary at a
+    specific offset. This can.
+    """
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    async def read(self, n: int) -> bytes:
+        del n
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""

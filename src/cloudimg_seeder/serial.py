@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import re
 from dataclasses import dataclass
@@ -36,6 +37,10 @@ class SerialSession:
 
     async def run(self) -> None:
         reader, writer = await self._open()
+        # Per-session: a chunk boundary can split a multi-byte character, and
+        # an incremental decoder is the only way to carry that half-decoded
+        # tail to the next read instead of corrupting it.
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
         buf = ""
         try:
             while True:
@@ -48,7 +53,7 @@ class SerialSession:
                     self._ensure_running()
                     await asyncio.sleep(0.1)
                     continue
-                text = chunk.decode(errors="replace")
+                text = decoder.decode(chunk)
                 self.display.write(text)
                 buf += text
                 if CLOUD_INIT_FINISHED.search(buf):
@@ -59,6 +64,9 @@ class SerialSession:
                 elif len(buf) > _LINE_BUF_MAX:
                     buf = buf[-_LINE_BUF_MAX:]
         finally:
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                self.display.write(tail)
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
