@@ -1,18 +1,27 @@
-"""Guest serial display sinks: console framing and optional log file."""
+"""Guest serial display sinks: console framing and log file."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
 from typing import TextIO
 
 from cloudimg_seeder.console.ansi import AnsiParser
 from cloudimg_seeder.console.filter import SgrFilter
+from cloudimg_seeder.console.plaintext import PlainTextRenderer
 from cloudimg_seeder.console.ui import Ui
 
 _RULE_OPEN = "guest serial"
 _RULE_CLOSE = "end guest serial"
+
+
+class SerialLogFormat(StrEnum):
+    """How ``--serial-log`` renders guest serial to a file."""
+
+    PLAIN = "plain"
+    RAW = "raw"
 
 
 @dataclass
@@ -21,36 +30,45 @@ class SerialOptions:
 
     show_serial: bool = True
     serial_log: Path | None = None
+    serial_log_format: SerialLogFormat = SerialLogFormat.PLAIN
     ui: Ui = field(default_factory=Ui)
 
 
 @dataclass
 class _LogSink:
-    """Plain-text serial log file: all escapes stripped before writing."""
+    """Guest serial log file: an interpreted plain-text render, or the raw stream.
+
+    ``PLAIN`` tracks cursor position and line-editing sequences so the file
+    records what a terminal would finally have shown for each line; ``RAW``
+    writes exactly what the guest sent, escapes included.
+    """
 
     file: TextIO
-    _filter: SgrFilter = field(init=False, repr=False)
-    _parser: AnsiParser = field(init=False, repr=False)
+    format: SerialLogFormat = SerialLogFormat.PLAIN
+    _renderer: PlainTextRenderer | None = field(default=None, init=False, repr=False)
+    _parser: AnsiParser | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._filter = SgrFilter(keep_sgr=False)
-        self._parser = AnsiParser(self._filter)
+        if self.format is SerialLogFormat.PLAIN:
+            self._renderer = PlainTextRenderer(self.file)
+            self._parser = AnsiParser(self._renderer)
 
     def write(self, text: str) -> None:
-        self._parser.feed(text)
-        plain = self._filter.drain()
-        if plain:
-            self.file.write(plain)
-            self.file.flush()
+        if self._parser is not None:
+            self._parser.feed(text)
+            return
+        self.file.write(text)
+        self.file.flush()
 
     def close(self) -> None:
-        self._parser.reset()  # discard any sequence left in progress
+        if self._renderer is not None:
+            self._renderer.close()
         self.file.close()
 
 
 @dataclass
 class SerialDisplay:
-    """Write guest serial to the console and/or a plain-text log file.
+    """Write guest serial to the console and/or a log file.
 
     Console output is delimited by ``guest serial`` rules so it is never
     confused with cloudimg-seeder's own lines. The rules are emitted lazily,
@@ -58,12 +76,14 @@ class SerialDisplay:
     text is passed through unchanged apart from filtered escape sequences: an
     ANSI-capable console keeps the guest's SGR colors while host-querying
     escapes are dropped, and a dumb or redirected console strips all
-    escapes. ``serial_log`` always receives plain text.
+    escapes. ``serial_log`` and ``serial_log_format`` are independent of what
+    the console shows.
     """
 
     ui: Ui
     show_serial: bool = True
     serial_log: Path | None = None
+    serial_log_format: SerialLogFormat = SerialLogFormat.PLAIN
     _filter: SgrFilter = field(init=False, repr=False)
     _parser: AnsiParser = field(init=False, repr=False)
     _log: _LogSink | None = field(default=None, init=False, repr=False)
@@ -75,7 +95,7 @@ class SerialDisplay:
         if self.serial_log is not None:
             self.serial_log.parent.mkdir(parents=True, exist_ok=True)
             log_file = self.serial_log.open("w", encoding="utf-8", newline="")
-            self._log = _LogSink(file=log_file)
+            self._log = _LogSink(file=log_file, format=self.serial_log_format)
 
     def _show(self, text: str) -> None:
         if not text:

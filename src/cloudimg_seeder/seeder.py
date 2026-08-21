@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Protocol
 
 from cloudimg_seeder.arch import GuestArch, resolve_arch
-from cloudimg_seeder.console.display import SerialOptions
+from cloudimg_seeder.console.display import SerialLogFormat, SerialOptions
 from cloudimg_seeder.console.ui import Ui
 from cloudimg_seeder.disk import (
     OutputFormat,
@@ -43,6 +43,7 @@ class SeedConfig:
     timeout_sec: int = 1200
     show_serial: bool = True
     serial_log: Path | None = None
+    serial_log_format: SerialLogFormat = SerialLogFormat.PLAIN
 
 
 class ImageOps(Protocol):
@@ -171,6 +172,7 @@ async def seed(
                 serial=SerialOptions(
                     show_serial=config.show_serial,
                     serial_log=config.serial_log,
+                    serial_log_format=config.serial_log_format,
                     ui=ui,
                 ),
             )

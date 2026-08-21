@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from cloudimg_seeder.arch import GuestArch
-from cloudimg_seeder.console import SerialOptions
+from cloudimg_seeder.console import SerialLogFormat, SerialOptions
 from cloudimg_seeder.disk import OutputFormat
 from cloudimg_seeder.errors import QemuError, SeedError
 from cloudimg_seeder.seeder import SeedConfig, seed
@@ -78,6 +78,7 @@ async def test_seed_passes_serial_options(
             arch=GuestArch.AMD64,
             show_serial=False,
             serial_log=log,
+            serial_log_format=SerialLogFormat.RAW,
         ),
         images=FakeImages(),
         run_guest=capture_guest,
@@ -86,6 +87,7 @@ async def test_seed_passes_serial_options(
     assert isinstance(serial, SerialOptions)
     assert serial.show_serial is False
     assert serial.serial_log == log
+    assert serial.serial_log_format is SerialLogFormat.RAW
 
 
 @pytest.mark.asyncio

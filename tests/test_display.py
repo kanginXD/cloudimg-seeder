@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from cloudimg_seeder.console.display import SerialDisplay
+from cloudimg_seeder.console.display import SerialDisplay, SerialLogFormat
 from cloudimg_seeder.console.ui import Ui
 from tests.support import FakeTty
 
@@ -63,7 +63,30 @@ def test_show_serial_false_with_serial_log_still_writes_file(tmp_path: Path) -> 
     display.write("\x1b[31monly-file\x1b[0m")
     display.close()
     assert buf.getvalue() == ""
-    assert log.read_text(encoding="utf-8") == "only-file"
+    assert log.read_text(encoding="utf-8") == "only-file\n"
+
+
+def test_serial_log_format_plain_interprets_carriage_return(tmp_path: Path) -> None:
+    ui, _buf = _ui(tty=False)
+    log = tmp_path / "serial.log"
+    display = SerialDisplay(ui=ui, serial_log=log)
+    display.write("50%\rdone\n")
+    display.close()
+    assert log.read_text(encoding="utf-8") == "done\n"
+
+
+def test_serial_log_format_raw_preserves_escapes_and_cr(tmp_path: Path) -> None:
+    ui, _buf = _ui(tty=False)
+    log = tmp_path / "serial.log"
+    display = SerialDisplay(
+        ui=ui, serial_log=log, serial_log_format=SerialLogFormat.RAW
+    )
+    display.write("50%\r\x1b[32mdone\x1b[0m\n")
+    display.close()
+    # read_bytes, not read_text: Path.read_text applies universal-newline
+    # translation on read, which would turn a lone \r into \n and hide
+    # exactly the byte this test exists to check.
+    assert log.read_bytes() == b"50%\r\x1b[32mdone\x1b[0m\n"
 
 
 def test_no_serial_output_leaves_no_rules() -> None:
@@ -106,7 +129,7 @@ def test_context_manager_closes_on_exit(tmp_path: Path) -> None:
     with SerialDisplay(ui=ui, serial_log=log) as display:
         display.write("hello\x1b[6n")
     assert "hello" in buf.getvalue()
-    assert log.read_text(encoding="utf-8") == "hello"
+    assert log.read_text(encoding="utf-8") == "hello\n"
 
 
 def test_context_manager_closes_on_exception(tmp_path: Path) -> None:
@@ -118,4 +141,4 @@ def test_context_manager_closes_on_exception(tmp_path: Path) -> None:
     ):
         display.write("partial")
         raise RuntimeError("boom")
-    assert log.read_text(encoding="utf-8") == "partial"
+    assert log.read_text(encoding="utf-8") == "partial\n"

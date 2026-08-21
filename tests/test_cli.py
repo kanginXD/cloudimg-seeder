@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from cloudimg_seeder.cli import app
-from cloudimg_seeder.console import SerialOptions
+from cloudimg_seeder.console import SerialLogFormat, SerialOptions
 from cloudimg_seeder.errors import SeedError
 from cloudimg_seeder.seeder import SeedConfig
 
@@ -31,6 +31,7 @@ def test_cli_help() -> None:
     assert "Seed cloud-init" in result.stdout or "cloud image" in result.stdout.lower()
     assert "--quiet" in result.stdout
     assert "--serial-log" in result.stdout
+    assert "--serial-log-format" in result.stdout
     assert "--verbose" in result.stdout
     assert "--no-serial" in result.stdout
     assert "--version" in result.stdout
@@ -76,16 +77,45 @@ def test_cli_passes_show_serial_and_serial_log(
     async def fake_seed(config: SeedConfig, **_kwargs: object) -> Path:
         seen["show_serial"] = config.show_serial
         seen["serial_log"] = config.serial_log
+        seen["serial_log_format"] = config.serial_log_format
         return out
 
     monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
     result = runner.invoke(
         app,
-        [str(disk), str(user), "-o", str(out), "--no-serial", "--serial-log", str(log)],
+        [
+            str(disk),
+            str(user),
+            "-o",
+            str(out),
+            "--no-serial",
+            "--serial-log",
+            str(log),
+            "--serial-log-format",
+            "raw",
+        ],
     )
     assert result.exit_code == 0
     assert seen["show_serial"] is False
     assert Path(str(seen["serial_log"])) == log.resolve()
+    assert seen["serial_log_format"] is SerialLogFormat.RAW
+
+
+def test_cli_serial_log_format_defaults_to_plain(
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    disk, user = _inputs
+    out = tmp_path / "seeded.qcow2"
+    seen: dict[str, object] = {}
+
+    async def fake_seed(config: SeedConfig, **_kwargs: object) -> Path:
+        seen["serial_log_format"] = config.serial_log_format
+        return out
+
+    monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
+    result = runner.invoke(app, [str(disk), str(user), "-o", str(out)])
+    assert result.exit_code == 0
+    assert seen["serial_log_format"] is SerialLogFormat.PLAIN
 
 
 def test_cli_quiet_silences_steps_but_keeps_result(

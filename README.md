@@ -88,32 +88,18 @@ cloudimg-seeder resolute-server-cloudimg-amd64.img user-data.yml \
 | `-q`, `--quiet` | off | Silence all output except errors and the result path |
 | `--no-serial` | off | Hide guest serial; step messages and progress stay visible |
 | `-v`, `--verbose` | off | Enable debug logging |
-| `--serial-log` | (none) | Write guest serial to a plain-text file |
+| `--serial-log` | (none) | Write guest serial to a file at PATH |
+| `--serial-log-format` | `plain` | `--serial-log` rendering: `plain` or `raw` |
 | `--version` | | Print the version and exit |
 
 `--output-format` values (local disk files only):
 
 `qcow2`, `qcow`, `qed`, `raw`, `vmdk`, `vhdx`, `vdi`, `vpc`, `parallels`, `dmg`
 
-## Output
-
-Everything cloudimg-seeder itself prints goes to stderr, so stdout carries
-only the resulting disk path — `OUT=$(cloudimg-seeder disk.img user-data.yml)`
-gets exactly the path, safe for scripting.
-
-On stderr, three kinds of output are visually distinct:
-
-- **Step messages** (`▸ output: /path/to/seeded.qcow2`) — cloudimg-seeder's
-  own narration of what it is doing.
-- **Progress bars** — shown while converting the disk image.
-- **Guest serial** — the booted guest's raw console output, delimited by
-  `──── guest serial ────` / `──── end guest serial ────` rules so it is
-  never mistaken for cloudimg-seeder's own lines.
-
-`-q`/`--quiet` silences all three, leaving only errors and the result path.
-`--no-serial` hides guest serial only, keeping steps and progress.
-`--serial-log` always writes guest serial to a plain-text file regardless of
-what is shown on the console.
+stdout carries only the resulting disk path — `OUT=$(cloudimg-seeder
+disk.img user-data.yml)` gets exactly the path, safe for scripting.
+Everything else, including guest serial, goes to stderr; see
+[docs/output.md](docs/output.md) for the full output and logging behavior.
 
 ## Notes
 
@@ -126,11 +112,6 @@ For libvirt, prefer `--output-format qcow2`. For Hyper-V, prefer
 The guest boots with a SLIRP-backed NIC, giving cloud-init outbound network
 access (package installs, remote data sources) during the seed run; no
 inbound port is exposed to the host.
-
-Completion is detected from cloud-init's default `final_message` on the
-guest serial console. If user-data overrides `final_message`, completion
-falls back to `--timeout-sec`: the guest is powered down once the timeout
-elapses, whether or not cloud-init has actually finished.
 
 arm64 firmware discovery checks `$QEMU_DATADIR` first, then the QEMU
 binary's own data directory, then common package-manager install paths. Set

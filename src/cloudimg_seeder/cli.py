@@ -11,7 +11,7 @@ from typing import Annotated
 import typer
 
 from cloudimg_seeder.arch import GuestArch
-from cloudimg_seeder.console import RichProgressSink, StepHandler, Ui
+from cloudimg_seeder.console import RichProgressSink, SerialLogFormat, StepHandler, Ui
 from cloudimg_seeder.disk import OutputFormat
 from cloudimg_seeder.seeder import SeedConfig, SeedError, seed
 
@@ -174,10 +174,18 @@ def main(
             file_okay=True,
             dir_okay=False,
             resolve_path=True,
-            help="Write guest serial to a plain-text file at PATH.",
+            help="Write guest serial to a file at PATH.",
             rich_help_panel=_PANEL_CONSOLE,
         ),
     ] = None,
+    serial_log_format: Annotated[
+        SerialLogFormat,
+        typer.Option(
+            "--serial-log-format",
+            help="--serial-log rendering: interpreted lines, or the raw stream.",
+            rich_help_panel=_PANEL_CONSOLE,
+        ),
+    ] = SerialLogFormat.PLAIN,
     _version: Annotated[
         bool,
         typer.Option(
@@ -205,6 +213,7 @@ def main(
         timeout_sec=timeout_sec,
         show_serial=not quiet and not no_serial,
         serial_log=serial_log,
+        serial_log_format=serial_log_format,
     )
     try:
         result = asyncio.run(seed(config, progress=RichProgressSink(ui), ui=ui))
