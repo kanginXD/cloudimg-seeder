@@ -79,20 +79,41 @@ cloudimg-seeder resolute-server-cloudimg-amd64.img user-data.yml \
 | --- | --- | --- |
 | `-m`, `--meta-data` | `instance-id: cloudimg-seeder` | NoCloud meta-data file |
 | `--arch` | from filename, else host | `arm64` or `amd64` |
-| `-o`, `--output` | `{cwd}/{stem}.{ext}` | Clash with `DISK` → `{stem}-cloudinit.{ext}` |
-| `--output-format` | `qcow2` | See formats below |
-| `--size` | (unchanged) | Grow virtual size before boot (e.g. `20G`); shrink rejected |
 | `--cpus` | `2` | |
 | `--memory-mb` | `2048` | |
 | `--timeout-sec` | `1200` | Cloud-init wait |
-| `-q`, `--quiet` | off | Do not write guest serial to stderr |
-| `--serial-log` | (none) | Write guest serial to a plain-text file |
+| `-o`, `--output` | `{cwd}/{stem}.{ext}` | Clash with `DISK` → `{stem}-cloudinit.{ext}` |
+| `--output-format` | `qcow2` | See formats below |
+| `--size` | (unchanged) | Grow virtual size before boot (e.g. `20G`); shrink rejected |
+| `-q`, `--quiet` | off | Silence all output except errors and the result path |
+| `--no-serial` | off | Hide guest serial; step messages and progress stay visible |
 | `-v`, `--verbose` | off | Enable debug logging |
+| `--serial-log` | (none) | Write guest serial to a plain-text file |
 | `--version` | | Print the version and exit |
 
 `--output-format` values (local disk files only):
 
 `qcow2`, `qcow`, `qed`, `raw`, `vmdk`, `vhdx`, `vdi`, `vpc`, `parallels`, `dmg`
+
+## Output
+
+Everything cloudimg-seeder itself prints goes to stderr, so stdout carries
+only the resulting disk path — `OUT=$(cloudimg-seeder disk.img user-data.yml)`
+gets exactly the path, safe for scripting.
+
+On stderr, three kinds of output are visually distinct:
+
+- **Step messages** (`▸ output: /path/to/seeded.qcow2`) — cloudimg-seeder's
+  own narration of what it is doing.
+- **Progress bars** — shown while converting the disk image.
+- **Guest serial** — the booted guest's raw console output, delimited by
+  `──── guest serial ────` / `──── end guest serial ────` rules so it is
+  never mistaken for cloudimg-seeder's own lines.
+
+`-q`/`--quiet` silences all three, leaving only errors and the result path.
+`--no-serial` hides guest serial only, keeping steps and progress.
+`--serial-log` always writes guest serial to a plain-text file regardless of
+what is shown on the console.
 
 ## Notes
 

@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import asyncio
-from io import StringIO
+import io
 from unittest.mock import MagicMock
 
 import pytest
+from rich.console import Console
 
 from cloudimg_seeder.console.display import SerialDisplay
+from cloudimg_seeder.console.ui import Ui
 from cloudimg_seeder.errors import QemuError
 from cloudimg_seeder.serial import CLOUD_INIT_FINISHED, SerialSession
 from cloudimg_seeder.transport import TcpEndpoint
+
+
+def _ui() -> tuple[Ui, io.StringIO]:
+    buf = io.StringIO()
+    return Ui(console=Console(file=buf, width=60)), buf
+
 
 _FINAL_MESSAGE = (
     "Cloud-init v. 24.1.3 finished at Tue, 01 Jan 2024 00:00:00 +0000. "
@@ -45,8 +53,8 @@ async def test_session_detects_finished(monkeypatch: pytest.MonkeyPatch) -> None
     )
     process = MagicMock()
     process.returncode = None
-    buf = StringIO()
-    display = SerialDisplay(quiet=False, ansi_capable=True, stream=buf)
+    ui, buf = _ui()
+    display = SerialDisplay(ui=ui)
     session = SerialSession(
         endpoint=TcpEndpoint(5555), process=process, display=display
     )
@@ -68,7 +76,8 @@ async def test_session_process_dies_before_ready(
     )
     process = MagicMock()
     process.returncode = 1
-    display = SerialDisplay(quiet=True, ansi_capable=True, stream=StringIO())
+    ui, _buf = _ui()
+    display = SerialDisplay(ui=ui, show_serial=False)
     session = SerialSession(
         endpoint=TcpEndpoint(5555),
         process=process,

@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "typer>=0.27.1",
+    "rich>=13.8.0",
     "qemu.qmp>=0.0.6",
     "pycdlib>=1.20.0",
 ]

@@ -234,8 +234,12 @@ async def test_run_headless_drains_stdin(
     async def fake_exec(*_a: object, **_k: object) -> Proc:
         return Proc()
 
-    async def boom_boot(*_a: object, **_k: object) -> None:
-        raise TimeoutError
+    class TimingOutSession:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def run(self) -> None:
+            raise TimeoutError
 
     async def boom_qmp(*_a: object, **_k: object) -> None:
         raise OSError("qmp down")
@@ -244,10 +248,7 @@ async def test_run_headless_drains_stdin(
         "cloudimg_seeder.guest.asyncio.create_subprocess_exec",
         fake_exec,
     )
-    monkeypatch.setattr(
-        "cloudimg_seeder.guest._boot_until_shutdown",
-        boom_boot,
-    )
+    monkeypatch.setattr("cloudimg_seeder.guest.SerialSession", TimingOutSession)
     monkeypatch.setattr(
         "cloudimg_seeder.guest.qmp_powerdown_and_wait",
         boom_qmp,
@@ -266,6 +267,107 @@ async def test_run_headless_drains_stdin(
             cpus=1,
             memory_mb=512,
             timeout_sec=1,
-            serial=SerialOptions(quiet=True),
+            serial=SerialOptions(show_serial=False),
         )
     assert drained == [True]
+
+
+@pytest.mark.asyncio
+async def test_serial_region_closes_before_powerdown_messages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the powerdown step message used to be emitted while the
+    guest-serial region was still open, so it landed inside the rules (and,
+    after unterminated guest output, on the guest's own last line)."""
+    import io
+    import logging
+
+    from rich.console import Console
+
+    from cloudimg_seeder.console import SerialOptions
+    from cloudimg_seeder.console.ui import StepHandler, Ui
+
+    buf = io.StringIO()
+    ui = Ui(console=Console(file=buf, width=70))
+    logger = logging.getLogger("cloudimg_seeder")
+    previous = logger.handlers[:]
+    logger.handlers = [StepHandler(ui)]
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    def no_drain() -> None:
+        return None
+
+    def tcg_accel(_arch: GuestArch) -> str:
+        return "tcg"
+
+    def x86_binary(_name: str) -> str:
+        return "qemu-system-x86_64"
+
+    def true_argv(**_kwargs: object) -> list[str]:
+        return ["true"]
+
+    monkeypatch.setattr("cloudimg_seeder.guest.drain_stdin", no_drain)
+    monkeypatch.setattr("cloudimg_seeder.guest.accel_for_guest", tcg_accel)
+    monkeypatch.setattr("cloudimg_seeder.guest.find_qemu_binary", x86_binary)
+    monkeypatch.setattr("cloudimg_seeder.guest.build_qemu_argv", true_argv)
+
+    class Proc:
+        returncode = 0
+
+        def kill(self) -> None:
+            return None
+
+        async def wait(self) -> int:
+            return 0
+
+    async def fake_exec(*_a: object, **_k: object) -> Proc:
+        return Proc()
+
+    class GuestTalksThenStops:
+        def __init__(self, **kwargs: object) -> None:
+            self._display = kwargs["display"]
+
+        async def run(self) -> None:
+            # Ends mid-line, exactly as a chunk boundary at the cloud-init
+            # completion match does.
+            self._display.write("Cloud-init v. 26.1 finished at Fri")  # type: ignore[attr-defined]
+
+    async def fake_powerdown(*_a: object, **_k: object) -> None:
+        logging.getLogger("cloudimg_seeder").info(
+            "cloud-init finished; sending ACPI powerdown"
+        )
+
+    monkeypatch.setattr(
+        "cloudimg_seeder.guest.asyncio.create_subprocess_exec", fake_exec
+    )
+    monkeypatch.setattr("cloudimg_seeder.guest.SerialSession", GuestTalksThenStops)
+    monkeypatch.setattr("cloudimg_seeder.guest.qmp_powerdown_and_wait", fake_powerdown)
+
+    disk = tmp_path / "d.qcow2"
+    iso = tmp_path / "s.iso"
+    disk.write_bytes(b"x")
+    iso.write_bytes(b"x")
+    try:
+        await run_headless_qemu(
+            arch=GuestArch.AMD64,
+            disk=disk,
+            seed_iso=iso,
+            workdir=tmp_path,
+            cpus=1,
+            memory_mb=512,
+            timeout_sec=5,
+            serial=SerialOptions(ui=ui),
+        )
+    finally:
+        logger.handlers = previous
+
+    lines = buf.getvalue().splitlines()
+    guest_line = next(i for i, ln in enumerate(lines) if "Cloud-init v. 26.1" in ln)
+    close_rule = next(i for i, ln in enumerate(lines) if "end guest serial" in ln)
+    step = next(i for i, ln in enumerate(lines) if "sending ACPI powerdown" in ln)
+
+    # The guest's unterminated line stands alone, the region closes, and only
+    # then does cloudimg-seeder speak.
+    assert lines[guest_line] == "Cloud-init v. 26.1 finished at Fri"
+    assert guest_line < close_rule < step

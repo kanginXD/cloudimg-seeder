@@ -159,16 +159,6 @@ async def qmp_powerdown_and_wait(
         await process.wait()
 
 
-async def _boot_until_shutdown(
-    endpoints: GuestEndpoints,
-    process: asyncio.subprocess.Process,
-    display: SerialDisplay,
-) -> None:
-    session = SerialSession(endpoint=endpoints.serial, process=process, display=display)
-    await session.run()
-    await qmp_powerdown_and_wait(endpoints.qmp, process)
-
-
 async def run_headless_qemu(
     *,
     arch: GuestArch,
@@ -209,29 +199,36 @@ async def run_headless_qemu(
     )
     logger.info("starting QEMU (%s, %s cpus, %sM)", arch.value, cpus, memory_mb)
 
-    with SerialDisplay(quiet=serial.quiet, serial_log=serial.serial_log) as display:
-        process = await asyncio.create_subprocess_exec(*argv)
+    process = await asyncio.create_subprocess_exec(*argv)
+    try:
         try:
+            # The serial region is scoped to serial streaming alone, so it is
+            # closed before powerdown logs anything and guest output never
+            # interleaves with cloudimg-seeder's own lines. timeout_sec bounds
+            # the wait for cloud-init; powerdown carries its own timeouts.
+            with SerialDisplay(
+                ui=serial.ui,
+                show_serial=serial.show_serial,
+                serial_log=serial.serial_log,
+            ) as display:
+                session = SerialSession(
+                    endpoint=endpoints.serial, process=process, display=display
+                )
+                await asyncio.wait_for(session.run(), timeout=timeout_sec)
+            await qmp_powerdown_and_wait(endpoints.qmp, process)
+        except TimeoutError:
+            logger.warning(
+                "timeout after %ss waiting for cloud-init; forcing quit",
+                int(timeout_sec),
+            )
             try:
-                await asyncio.wait_for(
-                    _boot_until_shutdown(endpoints, process, display),
-                    timeout=timeout_sec,
-                )
-            except TimeoutError:
-                logger.warning(
-                    "timeout after %ss waiting for cloud-init; forcing quit",
-                    int(timeout_sec),
-                )
-                try:
-                    await qmp_powerdown_and_wait(
-                        endpoints.qmp, process, force_quit=True
-                    )
-                except (QemuError, QMPError, OSError):
-                    process.kill()
-                    await process.wait()
-                raise QemuError("timed out waiting for cloud-init to finish") from None
-        finally:
-            drain_stdin()
-            if process.returncode is None:
+                await qmp_powerdown_and_wait(endpoints.qmp, process, force_quit=True)
+            except (QemuError, QMPError, OSError):
                 process.kill()
                 await process.wait()
+            raise QemuError("timed out waiting for cloud-init to finish") from None
+    finally:
+        drain_stdin()
+        if process.returncode is None:
+            process.kill()
+            await process.wait()

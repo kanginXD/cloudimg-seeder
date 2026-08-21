@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,15 @@ from cloudimg_seeder.seeder import SeedConfig
 runner = CliRunner()
 
 
+@pytest.fixture
+def _inputs(tmp_path: Path) -> tuple[Path, Path]:
+    disk = tmp_path / "disk.img"
+    user = tmp_path / "user-data.yml"
+    disk.write_bytes(b"x")
+    user.write_text("#cloud-config\n")
+    return disk, user
+
+
 def test_cli_help() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
@@ -22,7 +32,11 @@ def test_cli_help() -> None:
     assert "--quiet" in result.stdout
     assert "--serial-log" in result.stdout
     assert "--verbose" in result.stdout
+    assert "--no-serial" in result.stdout
     assert "--version" in result.stdout
+    assert "Guest" in result.stdout
+    assert "Output" in result.stdout
+    assert "Console" in result.stdout
 
 
 def test_cli_version() -> None:
@@ -31,40 +45,76 @@ def test_cli_version() -> None:
     assert "cloudimg-seeder" in result.stdout
 
 
-def test_cli_passes_quiet_and_serial_log(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_cli_stdout_carries_only_the_result_path(
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    disk = tmp_path / "disk.img"
-    user = tmp_path / "user-data.yml"
-    disk.write_bytes(b"x")
-    user.write_text("#cloud-config\n")
+    """Regression: stdout must never carry step/progress output, since
+    scripts do `OUT=$(cloudimg-seeder ...)`."""
+    disk, user = _inputs
+    out = tmp_path / "seeded.qcow2"
+
+    async def fake_seed(config: SeedConfig, **_kwargs: object) -> Path:
+        logging.getLogger("cloudimg_seeder").info("a step message")
+        return out
+
+    monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
+    result = runner.invoke(app, [str(disk), str(user), "-o", str(out)])
+    assert result.exit_code == 0
+    assert result.stdout == f"{out}\n"
+    assert "a step message" in result.stderr
+    assert "a step message" not in result.stdout
+
+
+def test_cli_passes_show_serial_and_serial_log(
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    disk, user = _inputs
     out = tmp_path / "seeded.qcow2"
     log = tmp_path / "serial.log"
     seen: dict[str, object] = {}
 
-    async def fake_seed(config: SeedConfig) -> Path:
-        seen["quiet"] = config.quiet
+    async def fake_seed(config: SeedConfig, **_kwargs: object) -> Path:
+        seen["show_serial"] = config.show_serial
         seen["serial_log"] = config.serial_log
         return out
 
     monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
     result = runner.invoke(
         app,
-        [str(disk), str(user), "-o", str(out), "-q", "--serial-log", str(log)],
+        [str(disk), str(user), "-o", str(out), "--no-serial", "--serial-log", str(log)],
     )
     assert result.exit_code == 0
-    assert seen["quiet"] is True
+    assert seen["show_serial"] is False
     assert Path(str(seen["serial_log"])) == log.resolve()
 
 
-def test_cli_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    disk = tmp_path / "disk.img"
-    user = tmp_path / "user-data.yml"
-    disk.write_bytes(b"x")
-    user.write_text("#cloud-config\n")
+def test_cli_quiet_silences_steps_but_keeps_result(
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    disk, user = _inputs
+    out = tmp_path / "seeded.qcow2"
+    seen: dict[str, object] = {}
+
+    async def fake_seed(config: SeedConfig, **_kwargs: object) -> Path:
+        seen["show_serial"] = config.show_serial
+        logging.getLogger("cloudimg_seeder").info("should not appear")
+        return out
+
+    monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
+    result = runner.invoke(app, [str(disk), str(user), "-o", str(out), "-q"])
+    assert result.exit_code == 0
+    assert seen["show_serial"] is False
+    assert result.stderr == ""
+    assert result.stdout == f"{out}\n"
+
+
+def test_cli_success(
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    disk, user = _inputs
     out = tmp_path / "seeded.qcow2"
 
-    async def fake_seed(config: object) -> Path:
+    async def fake_seed(config: object, **_kwargs: object) -> Path:
         return out
 
     monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
@@ -73,79 +123,63 @@ def test_cli_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert str(out) in result.stdout
 
 
-def test_cli_seed_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    disk = tmp_path / "disk.img"
-    user = tmp_path / "user-data.yml"
-    disk.write_bytes(b"x")
-    user.write_text("#cloud-config\n")
+def test_cli_seed_error(
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    disk, user = _inputs
 
-    async def fake_seed(config: object) -> Path:
+    async def fake_seed(config: object, **_kwargs: object) -> Path:
         raise SeedError("boom")
 
     monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
     result = runner.invoke(app, [str(disk), str(user)])
     assert result.exit_code == 1
-    assert "boom" in result.output
+    assert "boom" in result.stderr
 
 
 def test_cli_seed_error_message_with_brackets_is_not_mangled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    disk = tmp_path / "disk.img"
-    user = tmp_path / "user-data.yml"
-    disk.write_bytes(b"x")
-    user.write_text("#cloud-config\n")
+    disk, user = _inputs
 
-    async def fake_seed(config: object) -> Path:
+    async def fake_seed(config: object, **_kwargs: object) -> Path:
         raise SeedError("qemu-img failed (convert [-p] -O raw): boom")
 
     monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
     result = runner.invoke(app, [str(disk), str(user)])
     assert result.exit_code == 1
-    assert "[-p]" in result.output
+    assert "[-p]" in result.stderr
 
 
 def test_cli_verbose_enables_debug_logging(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    disk = tmp_path / "disk.img"
-    user = tmp_path / "user-data.yml"
-    disk.write_bytes(b"x")
-    user.write_text("#cloud-config\n")
+    disk, user = _inputs
     out = tmp_path / "seeded.qcow2"
 
-    async def fake_seed(config: object) -> Path:
+    async def fake_seed(config: object, **_kwargs: object) -> Path:
         return out
 
     monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
     result = runner.invoke(app, [str(disk), str(user), "-o", str(out), "-v"])
     assert result.exit_code == 0
-
-    import logging
-
     assert logging.getLogger("cloudimg_seeder").level == logging.DEBUG
 
 
 def test_cli_repeated_invocations_do_not_duplicate_log_handlers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    disk = tmp_path / "disk.img"
-    user = tmp_path / "user-data.yml"
-    disk.write_bytes(b"x")
-    user.write_text("#cloud-config\n")
+    disk, user = _inputs
     out = tmp_path / "seeded.qcow2"
 
-    async def fake_seed(config: object) -> Path:
+    async def fake_seed(config: object, **_kwargs: object) -> Path:
         return out
 
     monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
     runner.invoke(app, [str(disk), str(user), "-o", str(out)])
     runner.invoke(app, [str(disk), str(user), "-o", str(out)])
-
-    import logging
-
     assert len(logging.getLogger("cloudimg_seeder").handlers) == 1
 
 
 def test_serial_options_reexport_available() -> None:
-    assert SerialOptions().quiet is False
+    assert SerialOptions().show_serial is True

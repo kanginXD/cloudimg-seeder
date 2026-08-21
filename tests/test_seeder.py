@@ -76,7 +76,7 @@ async def test_seed_passes_serial_options(
             user_data=user,
             output=out,
             arch=GuestArch.AMD64,
-            quiet=True,
+            show_serial=False,
             serial_log=log,
         ),
         images=FakeImages(),
@@ -84,7 +84,7 @@ async def test_seed_passes_serial_options(
     )
     serial = seen.get("serial")
     assert isinstance(serial, SerialOptions)
-    assert serial.quiet is True
+    assert serial.show_serial is False
     assert serial.serial_log == log
 
 

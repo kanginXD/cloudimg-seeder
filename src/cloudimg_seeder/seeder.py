@@ -10,6 +10,7 @@ from typing import Protocol
 
 from cloudimg_seeder.arch import GuestArch, resolve_arch
 from cloudimg_seeder.console.display import SerialOptions
+from cloudimg_seeder.console.ui import Ui
 from cloudimg_seeder.disk import (
     OutputFormat,
     assert_grow_only,
@@ -19,6 +20,7 @@ from cloudimg_seeder.errors import InvalidInputError, QemuError, SeedError
 from cloudimg_seeder.guest import run_headless_qemu
 from cloudimg_seeder.host import find_qemu_binary
 from cloudimg_seeder.iso import build_seed_iso
+from cloudimg_seeder.progress import NullProgress, ProgressSink, progress_task
 from cloudimg_seeder.qemu_img import convert_image, image_info
 from cloudimg_seeder.qemu_img import resize_image as _resize_image
 
@@ -39,7 +41,7 @@ class SeedConfig:
     cpus: int = 2
     memory_mb: int = 2048
     timeout_sec: int = 1200
-    quiet: bool = False
+    show_serial: bool = True
     serial_log: Path | None = None
 
 
@@ -68,8 +70,11 @@ class GuestRunner(Protocol):
     ) -> None: ...
 
 
+@dataclass(frozen=True)
 class _DefaultImageOps:
     """qemu-img-backed ImageOps: the production implementation."""
+
+    progress: ProgressSink
 
     def virtual_size(self, path: Path) -> int:
         return image_info(path).virtual_size
@@ -78,13 +83,17 @@ class _DefaultImageOps:
         return image_info(path).format
 
     def convert(self, src: Path, dst: Path, fmt: OutputFormat) -> None:
-        convert_image(src, dst, fmt, src_format=image_info(src).format)
+        with progress_task(self.progress, f"converting to {fmt.value}") as task:
+            convert_image(
+                src,
+                dst,
+                fmt,
+                src_format=image_info(src).format,
+                on_progress=task.advance,
+            )
 
     def resize(self, path: Path, size: str) -> None:
         _resize_image(path, size)
-
-
-_default_images = _DefaultImageOps()
 
 
 async def seed(
@@ -92,6 +101,8 @@ async def seed(
     *,
     images: ImageOps | None = None,
     run_guest: GuestRunner | None = None,
+    progress: ProgressSink | None = None,
+    ui: Ui | None = None,
 ) -> Path:
     """Apply NoCloud cloud-init once and return the output disk path.
 
@@ -99,7 +110,9 @@ async def seed(
     converts to ``output_format`` when it is not qcow2. On failure a partial
     output may remain.
     """
-    images = images if images is not None else _default_images
+    ui = ui if ui is not None else Ui()
+    progress = progress if progress is not None else NullProgress()
+    images = images if images is not None else _DefaultImageOps(progress)
     run_guest = run_guest if run_guest is not None else run_headless_qemu
 
     if not config.disk.is_file():
@@ -155,7 +168,11 @@ async def seed(
                 cpus=config.cpus,
                 memory_mb=config.memory_mb,
                 timeout_sec=float(config.timeout_sec),
-                serial=SerialOptions(quiet=config.quiet, serial_log=config.serial_log),
+                serial=SerialOptions(
+                    show_serial=config.show_serial,
+                    serial_log=config.serial_log,
+                    ui=ui,
+                ),
             )
             if out_fmt is not OutputFormat.QCOW2:
                 images.convert(work_qcow2, out_disk, out_fmt)
