@@ -9,7 +9,8 @@ import pytest
 from cloudimg_seeder.arch import GuestArch
 from cloudimg_seeder.console import SerialLogFormat, SerialOptions
 from cloudimg_seeder.disk import OutputFormat
-from cloudimg_seeder.errors import QemuError, SeedError
+from cloudimg_seeder.errors import CloudInitError, QemuError, SeedError
+from cloudimg_seeder.probe import VENDOR_DATA
 from cloudimg_seeder.seeder import SeedConfig, seed
 
 
@@ -88,6 +89,95 @@ async def test_seed_passes_serial_options(
     assert serial.show_serial is False
     assert serial.serial_log == log
     assert serial.serial_log_format is SerialLogFormat.RAW
+
+
+@pytest.mark.asyncio
+async def test_seed_passes_idle_timeout_and_strict(
+    tmp_path: Path,
+    inputs: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disk, user = inputs
+    out = tmp_path / "out.qcow2"
+    seen: dict[str, object] = {}
+
+    async def capture_guest(**kwargs: object) -> None:
+        seen.update(kwargs)
+
+    monkeypatch.setattr(
+        "cloudimg_seeder.seeder.find_qemu_binary",
+        _fake_qemu_img,
+    )
+    await seed(
+        SeedConfig(
+            disk=disk,
+            user_data=user,
+            output=out,
+            arch=GuestArch.AMD64,
+            idle_timeout_sec=300,
+            strict=True,
+        ),
+        images=FakeImages(),
+        run_guest=capture_guest,
+    )
+    assert seen.get("idle_timeout_sec") == 300.0
+    assert seen.get("strict") is True
+
+
+@pytest.mark.asyncio
+async def test_seed_default_idle_timeout_is_none(
+    tmp_path: Path,
+    inputs: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disk, user = inputs
+    out = tmp_path / "out.qcow2"
+    seen: dict[str, object] = {}
+
+    async def capture_guest(**kwargs: object) -> None:
+        seen.update(kwargs)
+
+    monkeypatch.setattr(
+        "cloudimg_seeder.seeder.find_qemu_binary",
+        _fake_qemu_img,
+    )
+    await seed(
+        SeedConfig(disk=disk, user_data=user, output=out, arch=GuestArch.AMD64),
+        images=FakeImages(),
+        run_guest=capture_guest,
+    )
+    assert seen.get("idle_timeout_sec") is None
+    assert seen.get("strict") is False
+
+
+@pytest.mark.asyncio
+async def test_seed_writes_vendor_data_probe(
+    tmp_path: Path,
+    inputs: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disk, user = inputs
+    out = tmp_path / "out.qcow2"
+    seen: dict[str, object] = {}
+
+    def capture_iso(
+        dest: Path, _user_data: bytes, _meta_data: bytes | None, **kwargs: object
+    ) -> Path:
+        seen.update(kwargs)
+        dest.write_bytes(b"iso")
+        return dest
+
+    monkeypatch.setattr(
+        "cloudimg_seeder.seeder.find_qemu_binary",
+        _fake_qemu_img,
+    )
+    monkeypatch.setattr("cloudimg_seeder.seeder.build_seed_iso", capture_iso)
+    await seed(
+        SeedConfig(disk=disk, user_data=user, output=out, arch=GuestArch.AMD64),
+        images=FakeImages(),
+        run_guest=_noop_guest,
+    )
+    assert seen.get("vendor_data") == VENDOR_DATA
 
 
 @pytest.mark.asyncio
@@ -211,6 +301,34 @@ async def test_seed_maps_qemu_error(
         raise QemuError("guest failed")
 
     with pytest.raises(SeedError, match="guest failed"):
+        await seed(
+            SeedConfig(
+                disk=disk,
+                user_data=user,
+                output=tmp_path / "o.qcow2",
+                arch=GuestArch.AMD64,
+            ),
+            images=FakeImages(),
+            run_guest=boom,
+        )
+
+
+@pytest.mark.asyncio
+async def test_seed_maps_cloud_init_error(
+    tmp_path: Path,
+    inputs: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disk, user = inputs
+    monkeypatch.setattr(
+        "cloudimg_seeder.seeder.find_qemu_binary",
+        _fake_qemu_img,
+    )
+
+    async def boom(**_kwargs: object) -> None:
+        raise CloudInitError("cloud-init failed (exit 1)")
+
+    with pytest.raises(SeedError, match="cloud-init failed"):
         await seed(
             SeedConfig(
                 disk=disk,

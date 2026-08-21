@@ -63,7 +63,24 @@ malformed or unterminated sequence can hide.
 
 ## Completion detection
 
-Completion is detected from cloud-init's default `final_message` on the
-guest serial console. If user-data overrides `final_message`, completion
-falls back to `--timeout-sec`: the guest is powered down once the timeout
-elapses, whether or not cloud-init has actually finished.
+cloudimg-seeder injects a NoCloud `vendor-data` document that runs
+`cloud-init status --wait` in the background and reports its exit code over
+a dedicated virtio-serial port (`org.cloudimg-seeder.status`), independent
+of `user-data`. This is the primary completion signal, and it distinguishes
+a boot that finished from one that finished having failed:
+
+| `cloud-init status --wait` exit | Result |
+| --- | --- |
+| `0` (done) | success |
+| `2` (degraded — some modules failed) | success, with a warning; fails under `--strict` |
+| `1` (error) | fails |
+
+If the probe never responds — vendor-data processing disabled in user-data,
+or a guest cloud-init too old to support the probe's mechanism — completion
+falls back to matching cloud-init's default `final_message` on the guest
+serial console, and the run succeeds with status reported as unknown.
+
+`--idle-timeout-sec` bounds consecutive silence on the guest serial console,
+not total run time: it resets on any output and fails the run once no
+output has been seen for that long. Unset (the default), cloudimg-seeder
+waits indefinitely.

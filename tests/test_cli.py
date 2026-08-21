@@ -35,6 +35,8 @@ def test_cli_help() -> None:
     assert "--verbose" in result.stdout
     assert "--no-serial" in result.stdout
     assert "--version" in result.stdout
+    assert "--idle-timeout-sec" in result.stdout
+    assert "--strict" in result.stdout
     assert "Guest" in result.stdout
     assert "Output" in result.stdout
     assert "Console" in result.stdout
@@ -213,3 +215,52 @@ def test_cli_repeated_invocations_do_not_duplicate_log_handlers(
 
 def test_serial_options_reexport_available() -> None:
     assert SerialOptions().show_serial is True
+
+
+def test_cli_default_idle_timeout_and_strict(
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    disk, user = _inputs
+    out = tmp_path / "seeded.qcow2"
+    seen: dict[str, object] = {}
+
+    async def fake_seed(config: SeedConfig, **_kwargs: object) -> Path:
+        seen["idle_timeout_sec"] = config.idle_timeout_sec
+        seen["strict"] = config.strict
+        return out
+
+    monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
+    result = runner.invoke(app, [str(disk), str(user), "-o", str(out)])
+    assert result.exit_code == 0
+    assert seen["idle_timeout_sec"] is None
+    assert seen["strict"] is False
+
+
+def test_cli_passes_idle_timeout_and_strict(
+    tmp_path: Path, _inputs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    disk, user = _inputs
+    out = tmp_path / "seeded.qcow2"
+    seen: dict[str, object] = {}
+
+    async def fake_seed(config: SeedConfig, **_kwargs: object) -> Path:
+        seen["idle_timeout_sec"] = config.idle_timeout_sec
+        seen["strict"] = config.strict
+        return out
+
+    monkeypatch.setattr("cloudimg_seeder.cli.seed", fake_seed)
+    result = runner.invoke(
+        app,
+        [
+            str(disk),
+            str(user),
+            "-o",
+            str(out),
+            "--idle-timeout-sec",
+            "300",
+            "--strict",
+        ],
+    )
+    assert result.exit_code == 0
+    assert seen["idle_timeout_sec"] == 300
+    assert seen["strict"] is True

@@ -103,15 +103,23 @@ def main(
             rich_help_panel=_PANEL_GUEST,
         ),
     ] = 2048,
-    timeout_sec: Annotated[
-        int,
+    idle_timeout_sec: Annotated[
+        int | None,
         typer.Option(
-            "--timeout-sec",
-            help="Cloud-init wait timeout.",
+            "--idle-timeout-sec",
+            help="Fail if no guest serial output for this long. Default: wait forever.",
             min=1,
             rich_help_panel=_PANEL_GUEST,
         ),
-    ] = 1200,
+    ] = None,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Fail on cloud-init degraded, not only error.",
+            rich_help_panel=_PANEL_GUEST,
+        ),
+    ] = False,
     output: Annotated[
         Path | None,
         typer.Option(
@@ -210,7 +218,8 @@ def main(
         output_format=output_format,
         cpus=cpus,
         memory_mb=memory_mb,
-        timeout_sec=timeout_sec,
+        idle_timeout_sec=idle_timeout_sec,
+        strict=strict,
         show_serial=not quiet and not no_serial,
         serial_log=serial_log,
         serial_log_format=serial_log_format,

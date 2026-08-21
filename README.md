@@ -81,7 +81,8 @@ cloudimg-seeder resolute-server-cloudimg-amd64.img user-data.yml \
 | `--arch` | from filename, else host | `arm64` or `amd64` |
 | `--cpus` | `2` | |
 | `--memory-mb` | `2048` | |
-| `--timeout-sec` | `1200` | Cloud-init wait |
+| `--idle-timeout-sec` | (none) | Fail if no guest serial output for this long |
+| `--strict` | off | Fail on cloud-init degraded, not only error |
 | `-o`, `--output` | `{cwd}/{stem}.{ext}` | Clash with `DISK` → `{stem}-cloudinit.{ext}` |
 | `--output-format` | `qcow2` | See formats below |
 | `--size` | (unchanged) | Grow virtual size before boot (e.g. `20G`); shrink rejected |

@@ -11,6 +11,11 @@ class QemuError(Exception):
     """QEMU or qemu-img failure. Mapped to SeedError at the seeder boundary."""
 
 
+class CloudInitError(Exception):
+    """cloud-init finished in error (or degraded, under --strict). Mapped to
+    SeedError at the seeder boundary."""
+
+
 class InvalidInputError(Exception):
     """Malformed user-supplied value (arch, size, ...). Mapped to SeedError
     at the seeder boundary."""

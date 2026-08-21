@@ -1,4 +1,4 @@
-"""Local transport endpoints for QMP and guest serial connections."""
+"""Local transport endpoints for QMP, guest serial, and status connections."""
 
 from __future__ import annotations
 
@@ -15,11 +15,15 @@ _UNIX_PATH_MAX = 104
 
 
 class Endpoint(Protocol):
-    """One QEMU chardev endpoint (a QMP or serial connection point)."""
+    """One QEMU chardev endpoint (a QMP, serial, or status connection point)."""
 
     @property
     def qemu_arg(self) -> str:
         """Value for a QEMU ``-qmp``/``-serial`` chardev address."""
+        ...
+
+    def chardev_arg(self, chardev_id: str) -> str:
+        """Value for a QEMU ``-chardev socket,id=<chardev_id>,...`` address."""
         ...
 
     @property
@@ -42,6 +46,9 @@ class UnixEndpoint:
     def qemu_arg(self) -> str:
         return f"unix:{self.path},server=on,wait=off"
 
+    def chardev_arg(self, chardev_id: str) -> str:
+        return f"socket,id={chardev_id},path={self.path},server=on,wait=off"
+
     @property
     def address(self) -> str:
         return str(self.path)
@@ -60,6 +67,11 @@ class TcpEndpoint:
     def qemu_arg(self) -> str:
         return f"tcp:127.0.0.1:{self.port},server=on,wait=off"
 
+    def chardev_arg(self, chardev_id: str) -> str:
+        return (
+            f"socket,id={chardev_id},host=127.0.0.1,port={self.port},server=on,wait=off"
+        )
+
     @property
     def address(self) -> tuple[str, int]:
         return ("127.0.0.1", self.port)
@@ -72,6 +84,7 @@ class TcpEndpoint:
 class GuestEndpoints:
     qmp: Endpoint
     serial: Endpoint
+    status: Endpoint
 
 
 def _allocate_tcp_port() -> int:
@@ -88,20 +101,23 @@ def _unix_endpoint(workdir: Path, name: str) -> UnixEndpoint | None:
 
 
 def allocate_endpoints(workdir: Path) -> GuestEndpoints:
-    """Allocate QMP and serial endpoints for one guest run.
+    """Allocate QMP, serial, and status endpoints for one guest run.
 
     Unix sockets under ``workdir`` on POSIX: the directory is private to
-    this process (mode 0700), so no other local user can reach QMP or the
-    guest serial console. Falls back to loopback TCP when ``workdir`` would
-    push the socket path past ``sun_path``, and always on Windows, where
-    QEMU has no reliable AF_UNIX support.
+    this process (mode 0700), so no other local user can reach QMP, the
+    guest serial console, or the status channel. Falls back to loopback TCP
+    for all three when ``workdir`` would push any socket path past
+    ``sun_path``, and always on Windows, where QEMU has no reliable AF_UNIX
+    support.
     """
     if sys.platform != "win32":
         qmp = _unix_endpoint(workdir, "qmp.sock")
         serial = _unix_endpoint(workdir, "serial.sock")
-        if qmp is not None and serial is not None:
-            return GuestEndpoints(qmp=qmp, serial=serial)
+        status = _unix_endpoint(workdir, "status.sock")
+        if qmp is not None and serial is not None and status is not None:
+            return GuestEndpoints(qmp=qmp, serial=serial, status=status)
     return GuestEndpoints(
         qmp=TcpEndpoint(_allocate_tcp_port()),
         serial=TcpEndpoint(_allocate_tcp_port()),
+        status=TcpEndpoint(_allocate_tcp_port()),
     )

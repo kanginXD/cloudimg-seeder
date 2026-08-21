@@ -11,11 +11,17 @@ from qemu.qmp import QMPClient, QMPError
 
 from cloudimg_seeder.arch import GuestArch
 from cloudimg_seeder.console import SerialDisplay, SerialOptions, drain_stdin
-from cloudimg_seeder.errors import QemuError
+from cloudimg_seeder.errors import CloudInitError, QemuError
 from cloudimg_seeder.firmware import find_edk2_aarch64_code, prepare_edk2_aarch64_vars
 from cloudimg_seeder.host import accel_for_guest, find_qemu_binary
+from cloudimg_seeder.probe import STATUS_PORT_NAME
 from cloudimg_seeder.qemu_path import qemu_drive_path
-from cloudimg_seeder.serial import CLOUD_INIT_FINISHED, SerialSession
+from cloudimg_seeder.serial import (
+    CLOUD_INIT_FINISHED,
+    IdleTimeoutError,
+    SerialSession,
+    StatusSession,
+)
 from cloudimg_seeder.transport import Endpoint, GuestEndpoints, allocate_endpoints
 
 logger = logging.getLogger("cloudimg_seeder")
@@ -23,6 +29,10 @@ logger = logging.getLogger("cloudimg_seeder")
 _EDK2_VARS_NAME = "edk2-aarch64-vars.fd"
 _CONNECT_ATTEMPTS = 50
 _CONNECT_DELAY_SEC = 0.1
+_STATUS_CHARDEV_ID = "cistatus"
+# How long to wait for the status probe after the console already matched
+# cloud-init's final_message: the two race with no guaranteed order.
+_STATUS_GRACE_SEC = 15.0
 
 __all__ = [
     "CLOUD_INIT_FINISHED",
@@ -107,6 +117,12 @@ def build_qemu_argv(
             "user,model=virtio-net-pci",
             "-device",
             "virtio-rng-pci",
+            "-device",
+            "virtio-serial",
+            "-chardev",
+            endpoints.status.chardev_arg(_STATUS_CHARDEV_ID),
+            "-device",
+            f"virtserialport,chardev={_STATUS_CHARDEV_ID},name={STATUS_PORT_NAME}",
             "-drive",
             f"if=virtio,format=qcow2,file={disk_file}",
             "-drive",
@@ -159,6 +175,52 @@ async def qmp_powerdown_and_wait(
         await process.wait()
 
 
+async def _wait_for_completion(
+    serial_session: SerialSession, status_session: StatusSession
+) -> int | None:
+    """Run both sessions; return the probe's exit code, or None if unknown.
+
+    The probe result is authoritative when it arrives. If the console
+    matches cloud-init's final_message first, wait a grace window for the
+    probe before concluding status is unknown: the two race with no
+    guaranteed order.
+    """
+    serial_task = asyncio.create_task(serial_session.run())
+    status_task = asyncio.create_task(status_session.run())
+    try:
+        done, _ = await asyncio.wait(
+            {serial_task, status_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if status_task in done:
+            return status_task.result()
+
+        exc = serial_task.exception()
+        if exc is not None:
+            raise exc
+        try:
+            return await asyncio.wait_for(status_task, timeout=_STATUS_GRACE_SEC)
+        except TimeoutError:
+            return None
+    finally:
+        for task in (serial_task, status_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(serial_task, status_task, return_exceptions=True)
+
+
+def _check_status(status_code: int | None, *, strict: bool) -> None:
+    """Raise CloudInitError on cloud-init failure; warn on unknown/degraded."""
+    if status_code is None:
+        logger.warning("cloud-init status unknown; probe did not respond")
+        return
+    if status_code == 0:
+        return
+    if status_code == 2 and not strict:
+        logger.warning("cloud-init finished degraded (exit %s)", status_code)
+        return
+    raise CloudInitError(f"cloud-init failed (exit {status_code})")
+
+
 async def run_headless_qemu(
     *,
     arch: GuestArch,
@@ -167,13 +229,21 @@ async def run_headless_qemu(
     workdir: Path,
     cpus: int,
     memory_mb: int,
-    timeout_sec: float,
+    idle_timeout_sec: float | None,
+    strict: bool,
     serial: SerialOptions,
 ) -> None:
     """Boot disk with seed_iso until cloud-init finishes, then power down.
 
-    Streams serial via SerialDisplay. Raises QemuError on timeout or
-    unexpected guest exit. Drains TTY stdin after the run.
+    Streams serial via SerialDisplay. Completion is decided by the guest
+    status probe (see probe.py) reporting ``cloud-init status --wait``'s
+    exit code over a dedicated virtio-serial channel; when the probe never
+    responds, completion falls back to matching cloud-init's default
+    final_message on the console and status is treated as unknown.
+    idle_timeout_sec bounds consecutive console silence, not total run
+    time; None waits indefinitely. Raises QemuError on idle timeout or
+    unexpected guest exit, and CloudInitError when cloud-init itself failed
+    (or finished degraded, under strict). Drains TTY stdin after the run.
     """
     endpoints = allocate_endpoints(workdir)
     accel = accel_for_guest(arch)
@@ -198,37 +268,46 @@ async def run_headless_qemu(
         firmware=firmware,
     )
     logger.info("starting QEMU (%s, %s cpus, %sM)", arch.value, cpus, memory_mb)
+    if idle_timeout_sec is None:
+        logger.warning("no idle timeout set; waiting indefinitely for cloud-init")
 
+    status_code: int | None = None
     process = await asyncio.create_subprocess_exec(*argv)
     try:
         try:
             # The serial region is scoped to serial streaming alone, so it is
             # closed before powerdown logs anything and guest output never
-            # interleaves with cloudimg-seeder's own lines. timeout_sec bounds
-            # the wait for cloud-init; powerdown carries its own timeouts.
+            # interleaves with cloudimg-seeder's own lines. idle_timeout_sec
+            # bounds console silence; powerdown carries its own timeouts.
             with SerialDisplay(
                 ui=serial.ui,
                 show_serial=serial.show_serial,
                 serial_log=serial.serial_log,
+                serial_log_format=serial.serial_log_format,
             ) as display:
-                session = SerialSession(
-                    endpoint=endpoints.serial, process=process, display=display
+                serial_session = SerialSession(
+                    endpoint=endpoints.serial,
+                    process=process,
+                    display=display,
+                    idle_timeout_sec=idle_timeout_sec,
                 )
-                await asyncio.wait_for(session.run(), timeout=timeout_sec)
+                status_session = StatusSession(
+                    endpoint=endpoints.status, process=process
+                )
+                status_code = await _wait_for_completion(serial_session, status_session)
             await qmp_powerdown_and_wait(endpoints.qmp, process)
-        except TimeoutError:
-            logger.warning(
-                "timeout after %ss waiting for cloud-init; forcing quit",
-                int(timeout_sec),
-            )
+        except IdleTimeoutError as exc:
+            logger.warning("%s; forcing quit", exc)
             try:
                 await qmp_powerdown_and_wait(endpoints.qmp, process, force_quit=True)
             except (QemuError, QMPError, OSError):
                 process.kill()
                 await process.wait()
-            raise QemuError("timed out waiting for cloud-init to finish") from None
+            raise
     finally:
         drain_stdin()
         if process.returncode is None:
             process.kill()
             await process.wait()
+
+    _check_status(status_code, strict=strict)

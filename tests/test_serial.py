@@ -12,7 +12,12 @@ from rich.console import Console
 from cloudimg_seeder.console.display import SerialDisplay
 from cloudimg_seeder.console.ui import Ui
 from cloudimg_seeder.errors import QemuError
-from cloudimg_seeder.serial import CLOUD_INIT_FINISHED, SerialSession
+from cloudimg_seeder.serial import (
+    CLOUD_INIT_FINISHED,
+    IdleTimeoutError,
+    SerialSession,
+    StatusSession,
+)
 from cloudimg_seeder.transport import TcpEndpoint
 from tests.support import ScriptedReader
 
@@ -32,7 +37,8 @@ def test_cloud_init_finished_regex() -> None:
     assert CLOUD_INIT_FINISHED.search(_FINAL_MESSAGE)
     assert CLOUD_INIT_FINISHED.search("still booting") is None
     # A custom final_message overriding the default is not matched; the
-    # caller falls back to --timeout-sec in that case.
+    # status probe (see probe.py) is the primary completion signal, so this
+    # only means status is reported as unknown if the probe is unavailable.
     assert CLOUD_INIT_FINISHED.search("cloud-init has finished") is None
 
 
@@ -146,3 +152,114 @@ async def test_session_process_dies_before_ready(
     )
     with pytest.raises(QemuError, match="before serial"):
         await session.run()
+
+
+@pytest.mark.asyncio
+async def test_idle_timeout_raises_when_no_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = ScriptedReader([])  # every read() returns b""
+    writer = MagicMock()
+    writer.close = MagicMock()
+    writer.wait_closed = MagicMock(return_value=asyncio.sleep(0))
+
+    async def fake_open(host: str, port: int) -> tuple[object, object]:
+        return reader, writer
+
+    monkeypatch.setattr("cloudimg_seeder.transport.asyncio.open_connection", fake_open)
+    process = MagicMock()
+    process.returncode = None
+    ui, _buf = _ui()
+    display = SerialDisplay(ui=ui, show_serial=False)
+    session = SerialSession(
+        endpoint=TcpEndpoint(5555),
+        process=process,
+        display=display,
+        idle_timeout_sec=0.05,
+    )
+    with pytest.raises(IdleTimeoutError, match="no guest output"):
+        await session.run()
+
+
+@pytest.mark.asyncio
+async def test_idle_timeout_none_waits_through_silence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = ScriptedReader([b"", b"", _FINAL_MESSAGE.encode()])
+    writer = MagicMock()
+    writer.close = MagicMock()
+    writer.wait_closed = MagicMock(return_value=asyncio.sleep(0))
+
+    async def fake_open(host: str, port: int) -> tuple[object, object]:
+        return reader, writer
+
+    monkeypatch.setattr("cloudimg_seeder.transport.asyncio.open_connection", fake_open)
+    process = MagicMock()
+    process.returncode = None
+    ui, buf = _ui()
+    display = SerialDisplay(ui=ui)
+    session = SerialSession(
+        endpoint=TcpEndpoint(5555), process=process, display=display
+    )
+    await session.run()
+    assert "Cloud-init" in buf.getvalue()
+    display.close()
+
+
+@pytest.mark.asyncio
+async def test_status_session_returns_probe_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = ScriptedReader([b"cloudimg-seeder-status 0\n"])
+    writer = MagicMock()
+    writer.close = MagicMock()
+    writer.wait_closed = MagicMock(return_value=asyncio.sleep(0))
+
+    async def fake_open(host: str, port: int) -> tuple[object, object]:
+        return reader, writer
+
+    monkeypatch.setattr("cloudimg_seeder.transport.asyncio.open_connection", fake_open)
+    process = MagicMock()
+    process.returncode = None
+    session = StatusSession(endpoint=TcpEndpoint(5555), process=process)
+    assert await session.run() == 0
+
+
+@pytest.mark.asyncio
+async def test_status_session_sentinel_split_across_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    line = b"cloudimg-seeder-status 2\n"
+    split = 10
+    reader = ScriptedReader([line[:split], line[split:]])
+    writer = MagicMock()
+    writer.close = MagicMock()
+    writer.wait_closed = MagicMock(return_value=asyncio.sleep(0))
+
+    async def fake_open(host: str, port: int) -> tuple[object, object]:
+        return reader, writer
+
+    monkeypatch.setattr("cloudimg_seeder.transport.asyncio.open_connection", fake_open)
+    process = MagicMock()
+    process.returncode = None
+    session = StatusSession(endpoint=TcpEndpoint(5555), process=process)
+    assert await session.run() == 2
+
+
+@pytest.mark.asyncio
+async def test_status_session_returns_none_when_guest_exits_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_open(host: str, port: int) -> tuple[object, object]:
+        raise OSError("refused")
+
+    monkeypatch.setattr("cloudimg_seeder.transport.asyncio.open_connection", fake_open)
+    process = MagicMock()
+    process.returncode = 0
+    session = StatusSession(
+        endpoint=TcpEndpoint(5555),
+        process=process,
+        connect_attempts=2,
+        connect_delay_sec=0,
+    )
+    assert await session.run() is None

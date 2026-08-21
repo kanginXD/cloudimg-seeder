@@ -16,10 +16,16 @@ from cloudimg_seeder.disk import (
     assert_grow_only,
     default_output_path,
 )
-from cloudimg_seeder.errors import InvalidInputError, QemuError, SeedError
+from cloudimg_seeder.errors import (
+    CloudInitError,
+    InvalidInputError,
+    QemuError,
+    SeedError,
+)
 from cloudimg_seeder.guest import run_headless_qemu
 from cloudimg_seeder.host import find_qemu_binary
 from cloudimg_seeder.iso import build_seed_iso
+from cloudimg_seeder.probe import VENDOR_DATA
 from cloudimg_seeder.progress import NullProgress, ProgressSink, progress_task
 from cloudimg_seeder.qemu_img import convert_image, image_info
 from cloudimg_seeder.qemu_img import resize_image as _resize_image
@@ -40,7 +46,8 @@ class SeedConfig:
     output_format: OutputFormat = OutputFormat.QCOW2
     cpus: int = 2
     memory_mb: int = 2048
-    timeout_sec: int = 1200
+    idle_timeout_sec: int | None = None
+    strict: bool = False
     show_serial: bool = True
     serial_log: Path | None = None
     serial_log_format: SerialLogFormat = SerialLogFormat.PLAIN
@@ -66,7 +73,8 @@ class GuestRunner(Protocol):
         workdir: Path,
         cpus: int,
         memory_mb: int,
-        timeout_sec: float,
+        idle_timeout_sec: float | None,
+        strict: bool,
         serial: SerialOptions,
     ) -> None: ...
 
@@ -151,7 +159,7 @@ async def seed(
         with tempfile.TemporaryDirectory(prefix="cloudimg-seeder-") as tmp:
             workdir = Path(tmp)
             seed_iso = workdir / "seed.iso"
-            build_seed_iso(seed_iso, user_bytes, meta_bytes)
+            build_seed_iso(seed_iso, user_bytes, meta_bytes, vendor_data=VENDOR_DATA)
 
             if out_fmt is OutputFormat.QCOW2:
                 work_qcow2 = out_disk
@@ -168,7 +176,12 @@ async def seed(
                 workdir=workdir,
                 cpus=config.cpus,
                 memory_mb=config.memory_mb,
-                timeout_sec=float(config.timeout_sec),
+                idle_timeout_sec=(
+                    float(config.idle_timeout_sec)
+                    if config.idle_timeout_sec is not None
+                    else None
+                ),
+                strict=config.strict,
                 serial=SerialOptions(
                     show_serial=config.show_serial,
                     serial_log=config.serial_log,
@@ -178,7 +191,7 @@ async def seed(
             )
             if out_fmt is not OutputFormat.QCOW2:
                 images.convert(work_qcow2, out_disk, out_fmt)
-    except (QemuError, InvalidInputError) as exc:
+    except (QemuError, CloudInitError, InvalidInputError) as exc:
         raise SeedError(str(exc)) from exc
 
     logger.info("done")

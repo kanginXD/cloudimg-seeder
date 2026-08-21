@@ -6,6 +6,8 @@ from io import BytesIO
 from pathlib import Path
 
 import pycdlib
+import pytest
+from pycdlib.pycdlibexception import PyCdlibInvalidInput
 
 from cloudimg_seeder.iso import DEFAULT_INSTANCE_ID, build_seed_iso
 
@@ -34,3 +36,16 @@ def test_build_seed_iso_default_meta(tmp_path: Path) -> None:
     build_seed_iso(dest, b"user", None)
     meta = _read_joliet(dest, "/meta-data")
     assert meta == f"instance-id: {DEFAULT_INSTANCE_ID}\n".encode()
+
+
+def test_build_seed_iso_with_vendor_data(tmp_path: Path) -> None:
+    dest = tmp_path / "seed.iso"
+    build_seed_iso(dest, b"#cloud-config\n", None, vendor_data=b"#cloud-config\nx: 1\n")
+    assert _read_joliet(dest, "/vendor-data") == b"#cloud-config\nx: 1\n"
+
+
+def test_build_seed_iso_without_vendor_data(tmp_path: Path) -> None:
+    dest = tmp_path / "seed.iso"
+    build_seed_iso(dest, b"#cloud-config\n", None)
+    with pytest.raises(PyCdlibInvalidInput):
+        _read_joliet(dest, "/vendor-data")
