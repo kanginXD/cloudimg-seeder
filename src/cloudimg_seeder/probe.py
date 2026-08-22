@@ -14,25 +14,27 @@ import re
 STATUS_PORT_NAME = "org.cloudimg-seeder.status"
 
 _STATUS_PORT_PATH = f"/dev/virtio-ports/{STATUS_PORT_NAME}"
-_PROBE_SCRIPT_PATH = "/var/lib/cloud/cloudimg-seeder-probe.sh"
 
 # Written by the guest probe once cloud-init reaches a final state.
 STATUS_LINE = re.compile(rb"^cloudimg-seeder-status (\d+)$")
 
+_PROBE_CMD = (
+    "cloud-init status --wait >/dev/null 2>&1; "
+    f'echo "cloudimg-seeder-status $?" > {_STATUS_PORT_PATH}'
+)
+
 # bootcmd runs at the "init" stage, well before "modules:final", so the
-# probe is armed long before cloud-init can finish. It must detach fully
-# (setsid, all three fds redirected): cloud-init status --wait blocks on
-# cloud-final.service, and cloud-init itself waits on bootcmd's own stdio,
-# so an attached probe would deadlock the boot it is trying to observe.
+# probe is armed long before cloud-init can finish. It is a self-contained
+# command with no dependency on write_files or any other module: bootcmd
+# runs before write_files in cloud-init's default module order, so a probe
+# script created by write_files would not exist yet when bootcmd tries to
+# launch it. It must detach fully (setsid, all three fds redirected):
+# cloud-init status --wait blocks until cloud-init's own Final stage
+# completes, and cloud-init itself waits on bootcmd's own stdio, so an
+# attached probe would deadlock the boot it is trying to observe.
 VENDOR_DATA = f"""\
 #cloud-config
-write_files:
-  - path: {_PROBE_SCRIPT_PATH}
-    permissions: '0755'
-    content: |
-      #!/bin/sh
-      cloud-init status --wait >/dev/null 2>&1
-      echo "cloudimg-seeder-status $?" > {_STATUS_PORT_PATH}
 bootcmd:
-  - setsid {_PROBE_SCRIPT_PATH} </dev/null >/dev/null 2>&1 &
+  - |
+    setsid sh -c '{_PROBE_CMD}' </dev/null >/dev/null 2>&1 &
 """.encode()
